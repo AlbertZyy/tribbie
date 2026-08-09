@@ -39,12 +39,13 @@ def test_from_edges_rejects_invalid_peer_and_indices():
 
 
 def test_from_edges_rejects_ambiguous_replace_targets():
+    plan = HaloPlan.from_edges(
+        MPI.COMM_SELF,
+        [HaloEdge(0, [0], [1]), HaloEdge(0, [2], [1])],
+        entity_count=3,
+    )
     with pytest.raises(ReplaceConflictError):
-        HaloPlan.from_edges(
-            MPI.COMM_SELF,
-            [HaloEdge(0, [0], [1]), HaloEdge(0, [2], [1])],
-            entity_count=3,
-        )
+        plan.exchange(np.zeros(3))
 
 
 def test_exchange_rejects_invalid_payload():
@@ -66,8 +67,8 @@ def test_self_exchange_replace_and_sum_support_payloads_and_in_place():
     replaced = plan.exchange(values, op="replace")
     assert np.array_equal(replaced, [[1, 10], [1, 10], [2, 20]])
 
-    with pytest.raises(NotImplementedError):
-        plan.exchange(np.array([1.0, 2.0, 3.0]), op="sum")
+    summed = plan.exchange(np.array([1.0, 2.0, 3.0]), op="sum")
+    assert np.array_equal(summed, [1.0, 3.0, 5.0])
 
 
 def test_empty_plan_accepts_empty_and_nonempty_payload_without_mpi_traffic():

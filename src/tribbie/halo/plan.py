@@ -88,9 +88,6 @@ class HaloPlan:
                 )
             )
         normalized = tuple(aggregated)
-        recv_indices = np.concatenate([edge.recv_indices for edge in normalized]) if normalized else np.empty(0, dtype=np.intp)
-        if len(np.unique(recv_indices)) != recv_indices.size:
-            raise ReplaceConflictError("duplicate receive indices are ambiguous for replace")
         ordered = tuple(sorted(normalized, key=lambda edge: edge.peer))
         plan_comm = comm.Dup()
         plan = cls(
@@ -151,7 +148,7 @@ class HaloPlan:
         if self._comm is None or self._comm.Get_size() == 1:
             for send_buffer, recv_buffer in zip(send_buffers, recv_buffers):
                 recv_buffer[...] = send_buffer
-            self._apply_received(target, recv_buffers)
+            self._apply_received(target, recv_buffers, op)
             request = HaloRequest.completed_request(target)
         else:
             from mpi4py import MPI
@@ -169,13 +166,13 @@ class HaloPlan:
             def poll() -> tuple[bool, Any | None]:
                 complete = MPI.Request.Testall(mpi_requests)
                 if complete:
-                    self._apply_received(target, recv_buffers)
+                    self._apply_received(target, recv_buffers, op)
                     return True, target
                 return False, None
 
             def wait() -> Any:
                 MPI.Request.Waitall(mpi_requests)
-                self._apply_received(target, recv_buffers)
+                self._apply_received(target, recv_buffers, op)
                 return target
 
             request = HaloRequest(
@@ -187,10 +184,12 @@ class HaloPlan:
         return request
 
     def _prepare_exchange(self, src, dst, op):
-        if op == "sum":
-            raise NotImplementedError("sum communication starts in stage D")
-        if op != "replace":
+        if op not in {"replace", "sum"}:
             raise ValueError(f"unsupported operation: {op}")
+        if op == "replace" and any(
+            len(np.unique(edge.recv_indices)) != edge.recv_indices.size for edge in self._edges
+        ):
+            raise ReplaceConflictError("duplicate receive indices are ambiguous for replace")
         source = _validate_array(src)
         if self._entity_count is not None and source.shape[0] != self._entity_count:
             raise PayloadMismatchError("payload entity count does not match plan")
@@ -212,9 +211,18 @@ class HaloPlan:
             buffer[...] = source[edge.send_indices]
         return source, target, send_buffers, recv_buffers
 
-    def _apply_received(self, target, recv_buffers):
+    def _apply_received(self, target, recv_buffers, op):
         for edge, buffer in zip(self._edges, recv_buffers):
-            target[edge.recv_indices] = buffer
+            if op == "replace":
+                target[edge.recv_indices] = buffer
+            else:
+                for position, index in enumerate(edge.recv_indices):
+                    target[index] += buffer[position]
+
+    @staticmethod
+    def reduce_and_broadcast(reduce_plan, broadcast_plan, values, *, dst=None):
+        reduced = reduce_plan.exchange(values, dst=dst, op="sum")
+        return broadcast_plan.exchange(reduced, op="replace")
 
     def _release_request(self, request) -> None:
         if self._active_request is request:

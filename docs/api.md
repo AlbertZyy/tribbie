@@ -1,6 +1,6 @@
 # Halo API Contract
 
-阶段 C 已实现直接边的阻塞与非阻塞 `replace`；`sum` 保留给阶段 D。
+阶段 D 已实现直接边的阻塞与非阻塞 `replace`/`sum`，以及显式 reduce-and-broadcast 组合。
 
 ## `HaloPlan`
 
@@ -10,7 +10,7 @@
 - `plan.begin_exchange(src, dst=None, *, op="replace")`
 - `plan.close()`
 
-`dst=None` 表示原地更新。数据形状为 `(local_entity_count, ...)`，支持标量与多分量 payload。阶段 B 的 `replace` 覆盖接收位置；`sum` 将在阶段 D 实现。计划元数据和内部索引不得暴露为可变别名。
+`dst=None` 表示原地更新。数据形状为 `(local_entity_count, ...)`，支持标量与多分量 payload。`replace` 覆盖接收位置并拒绝重复目标；`sum` 保留目标原值并逐项累加收到的贡献。计划元数据和内部索引不得暴露为可变别名。
 
 ## `HaloRequest`
 

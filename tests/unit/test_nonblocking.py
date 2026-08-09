@@ -50,5 +50,5 @@ def test_plan_rejects_second_in_flight_request_and_close_until_completion():
 
 def test_begin_exchange_rejects_unsupported_operation():
     plan = HaloPlan.from_edges(MPI.COMM_SELF, [], entity_count=0)
-    with pytest.raises(NotImplementedError):
-        plan.begin_exchange(np.empty(0), op="sum")
+    request = plan.begin_exchange(np.empty(0), op="sum")
+    assert request.wait().size == 0
