@@ -140,7 +140,11 @@ class HaloPlan:
             supported_dtypes=tuple(np.dtype(code) for code in ("int32", "int64", "float32", "float64", "complex64", "complex128")),
         )
         plan._owns_comm = True
-        plan._validate_peer_counts()
+        try:
+            plan._validate_peer_counts()
+        except Exception:
+            plan.close()
+            raise
         return plan
 
     @property
