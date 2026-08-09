@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Generic, TypeVar
+from typing import cast, Generic, Self, TypeVar
 
 from .errors import InvalidRequestStateError
 
@@ -9,7 +9,13 @@ _ResultT = TypeVar("_ResultT")
 
 
 class HaloRequest(Generic[_ResultT]):
-    """Stage A request lifecycle placeholder."""
+    """Own the completion state and result of one non-blocking exchange.
+
+    A pending request represents MPI operations whose completion has not yet
+    been observed.  Once complete, ``test()`` and ``wait()`` expose the same
+    result object, and the one-shot completion callback releases the plan's
+    in-flight slot.
+    """
 
     def __init__(
         self,
@@ -27,18 +33,22 @@ class HaloRequest(Generic[_ResultT]):
         self._on_complete = on_complete
 
     @classmethod
-    def pending(cls) -> HaloRequest[None]:
+    def pending(cls) -> Self:
+        """Create a pending request for lifecycle-level use."""
         return cls()
 
     @classmethod
     def completed_request(cls, result: _ResultT) -> HaloRequest[_ResultT]:
+        """Create a request whose result is already complete."""
         return cls(result=result, completed=True)
 
     @property
     def completed(self) -> bool:
+        """Return whether completion has been observed."""
         return self._completed
 
     def test(self) -> tuple[bool, _ResultT | None]:
+        """Poll once without blocking and return ``(complete, result)``."""
         if not self._completed and self._poll_fn is not None:
             complete, result = self._poll_fn()
             if complete:
@@ -48,6 +58,7 @@ class HaloRequest(Generic[_ResultT]):
         return self._completed, self._result if self._completed else None
 
     def wait(self, timeout: float | None = None) -> _ResultT:
+        """Block until completion and return the final result object."""
         if not self._completed:
             if timeout == 0:
                 raise InvalidRequestStateError("request is not complete")
@@ -56,7 +67,7 @@ class HaloRequest(Generic[_ResultT]):
             self._result = self._wait_fn()
             self._completed = True
             self._notify_complete()
-        return self._result  # type: ignore[return-value]
+        return cast(_ResultT, self._result)
 
     def _complete(self, result: _ResultT) -> None:
         if self._completed:
