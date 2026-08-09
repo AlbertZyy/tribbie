@@ -12,10 +12,13 @@ if TYPE_CHECKING:
 
 from .errors import (
     ConcurrentRequestError,
+    DuplicateGlobalIdError,
     HaloClosedError,
     InconsistentCommunicationError,
+    InvalidGlobalIdError,
     InvalidIndexError,
     InvalidPeerError,
+    InvalidOwnerError,
     PayloadMismatchError,
     ReplaceConflictError,
     UnsupportedArrayError,
@@ -88,7 +91,67 @@ class HaloPlan:
         *,
         validation: str = "basic",
     ) -> HaloPlan:
-        raise NotImplementedError("global-id plan construction starts in stage E")
+        """Build an owner-to-ghost plan from distributed global identifiers.
+
+        ``global_ids`` and ``owners`` describe this rank's local entities;
+        owners are supplied explicitly and are not inferred.  Non-owner ranks
+        send ``(global_id, local_index)`` requests to owners during
+        construction.  Owners answer with their local index, allowing both
+        sides to cache a directed edge; runtime exchange then transfers only
+        numeric payload buffers and never repeats the identifier exchange.
+
+        ``basic`` performs local validation and distributed owner lookup;
+        ``full`` additionally checks that every global identifier has one
+        consistent owner and that the declared owner stores that identifier.
+        ``none`` skips the optional full consistency pass but retains checks
+        needed to construct a safe plan.
+        """
+        if validation not in {"none", "basic", "full"}:
+            raise ValueError(f"unsupported validation level: {validation}")
+        ids = np.asarray(global_ids)
+        owner_array = np.asarray(owners)
+        size = comm.Get_size()
+        rank = comm.Get_rank()
+        local_error = _validate_global_inputs(ids, owner_array, size)
+        _raise_collective_validation_error(comm, local_error)
+
+        if validation == "full":
+            records = comm.allgather(
+                [(int(global_id), int(owner)) for global_id, owner in zip(ids, owner_array)]
+            )
+            _validate_full_global_records(records, size)
+
+        local_index = {int(global_id): index for index, global_id in enumerate(ids)}
+        outbound: list[list[tuple[int, int]]] = [[] for _ in range(size)]
+        for index, (global_id, owner) in enumerate(zip(ids, owner_array)):
+            if int(owner) != rank:
+                outbound[int(owner)].append((int(global_id), index))
+        inbound = comm.alltoall(outbound)
+
+        responses: list[list[tuple[int, int, int]]] = [[] for _ in range(size)]
+        owner_edges: dict[int, list[int]] = {}
+        for requester, requests in enumerate(inbound):
+            for global_id, ghost_index in requests:
+                owner_index = local_index.get(global_id)
+                if owner_index is None:
+                    local_error = ("global_id", f"owner rank {rank} does not contain global id {global_id}")
+                    continue
+                responses[requester].append((global_id, ghost_index, owner_index))
+                owner_edges.setdefault(requester, []).append(owner_index)
+
+        _raise_collective_validation_error(comm, local_error)
+        returned = comm.alltoall(responses)
+        ghost_edges: dict[int, list[int]] = {}
+        for owner, owner_responses in enumerate(returned):
+            for _global_id, ghost_index, _owner_index in owner_responses:
+                ghost_edges.setdefault(owner, []).append(ghost_index)
+
+        edges = []
+        for peer in sorted(set(owner_edges) | set(ghost_edges)):
+            sends = owner_edges.get(peer, [])
+            receives = ghost_edges.get(peer, [])
+            edges.append(HaloEdge(peer, sends, receives))
+        return cls.from_edges(comm, edges, validation=validation, entity_count=ids.size)
 
     @classmethod
     def from_edges(
@@ -369,11 +432,63 @@ class HaloPlan:
 
 def _index_array(values: Any) -> NDArray[np.intp]:
     array = np.asarray(values)
+    if array.size == 0:
+        return np.empty(0, dtype=np.intp)
     if array.ndim != 1 or not np.issubdtype(array.dtype, np.integer):
         raise InvalidIndexError("indices must be a one-dimensional integer array")
     if np.any(array < 0):
         raise InvalidIndexError("indices must be non-negative")
     return np.array(array, dtype=np.intp, copy=True)
+
+
+def _validate_global_inputs(
+    global_ids: np.ndarray,
+    owners: np.ndarray,
+    comm_size: int,
+) -> tuple[str, str] | None:
+    if global_ids.ndim != 1 or global_ids.dtype != np.dtype(np.int64):
+        return "global_id", "global_ids must be a one-dimensional int64 array"
+    if owners.ndim != 1 or not np.issubdtype(owners.dtype, np.integer):
+        return "owner", "owners must be a one-dimensional integer array"
+    if global_ids.size != owners.size:
+        return "owner", "owners must have the same length as global_ids"
+    if np.any(global_ids < 0):
+        return "global_id", "global_ids must be non-negative"
+    if np.unique(global_ids).size != global_ids.size:
+        return "duplicate_global_id", "global_ids must be unique within each rank"
+    if np.any(owners < 0) or np.any(owners >= comm_size):
+        return "owner", f"owners must be ranks in [0, {comm_size})"
+    return None
+
+
+def _raise_collective_validation_error(
+    comm: MPI.Comm,
+    local_error: tuple[str, str] | None,
+) -> None:
+    errors = comm.allgather(local_error)
+    first_error = next((error for error in errors if error is not None), None)
+    if first_error is None:
+        return
+    category, message = first_error
+    if category == "global_id":
+        raise InvalidGlobalIdError(message)
+    if category == "duplicate_global_id":
+        raise DuplicateGlobalIdError(message)
+    if category == "owner":
+        raise InvalidOwnerError(message)
+    raise InconsistentCommunicationError(message)
+
+
+def _validate_full_global_records(
+    records: list[list[tuple[int, int]]],
+    comm_size: int,
+) -> None:
+    ownership: dict[int, int] = {}
+    for rank_records in records:
+        for global_id, owner in rank_records:
+            previous = ownership.setdefault(global_id, owner)
+            if previous != owner or owner < 0 or owner >= comm_size:
+                raise InvalidOwnerError(f"global id {global_id} has inconsistent owners")
 
 
 def _validate_array(values: Any) -> _Array:

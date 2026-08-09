@@ -4,7 +4,7 @@
 
 ## `HaloPlan`
 
-- `HaloPlan.from_global_ids(comm, global_ids, owners, *, validation="basic")`
+- `HaloPlan.from_global_ids(comm, global_ids, owners, *, validation="basic")`：`owners` 必须由调用方显式提供；计划构建期分布式发现 owner-to-ghost 索引，运行期不再传输全局编号。
 - `HaloPlan.from_edges(comm, edges, *, validation="basic")`
 - `plan.exchange(src, dst=None, *, op="replace")`
 - `plan.begin_exchange(src, dst=None, *, op="replace")`

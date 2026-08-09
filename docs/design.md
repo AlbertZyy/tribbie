@@ -11,7 +11,7 @@ Halo 是面向通用分布式编号集的通信组件，不包含网格、节点
 - `HaloEdge`: `peer`、`send_indices`、`recv_indices`；索引在计划构建期固定。
 - `HaloPlan`: 静态邻接、索引、计数和可复用 buffer 的所有者；运行期只接收 payload 数组。
 
-阶段 B 通过 `HaloEdge` 构建直接边计划。构建期复制 communicator 以隔离消息上下文，collective 核对对端发送/接收计数；运行期只与真实邻居交换 typed-buffer payload。固定 dtype 与 payload 形状的发送、接收 buffer 跨轮复用。阶段 C 的请求持有 MPI 请求、源/目标数组及这些 buffer，直到 `test()` 或 `wait()` 确认完成。
+阶段 B 通过 `HaloEdge` 构建直接边计划。构建期复制 communicator 以隔离消息上下文，collective 核对对端发送/接收计数；运行期只与真实邻居交换 typed-buffer payload。固定 dtype 与 payload 形状的发送、接收 buffer 跨轮复用。阶段 C 的请求持有 MPI 请求、源/目标数组及这些 buffer，直到 `test()` 或 `wait()` 确认完成。 阶段 E 的 `from_global_ids()` 要求显式 `owners`；非 owner 在构建期向 owner 请求全局编号映射，owner 返回本地索引，随后转换为 owner-to-ghost 直接边。
 
 ## Owner and ghost semantics
 
