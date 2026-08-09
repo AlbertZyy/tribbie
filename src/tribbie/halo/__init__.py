@@ -1,4 +1,4 @@
-from .plan import HaloPlan
+from .plan import HaloEdge, HaloPlan
 from .request import HaloRequest
 
-__all__ = ["HaloPlan", "HaloRequest"]
+__all__ = ["HaloEdge", "HaloPlan", "HaloRequest"]

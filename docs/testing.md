@@ -2,7 +2,7 @@
 
 ## Unit matrix
 
-阶段 A 覆盖公共异常层级、请求 pending/completed 状态、重复 `wait()`、计划元数据只读性、关闭计划行为，以及通信方法明确延期。后续单元测试补充 dtype 映射、索引验证、buffer 尺寸和归并。
+阶段 A 覆盖公共异常层级与请求状态。阶段 B 增加直接边、peer/index/计数验证、元数据只读性、关闭行为、payload 校验、空通信、原地打包和固定形状 buffer 复用。后续单元测试补充归并与非阻塞生命周期。
 
 ## MPI matrix
 

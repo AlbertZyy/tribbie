@@ -1,6 +1,6 @@
 # Halo API Contract
 
-阶段 A 公开并冻结接口形状；通信实现从阶段 B 开始。
+阶段 B 实现直接边的阻塞 `replace`；非阻塞和 `sum` 保留给后续阶段。
 
 ## `HaloPlan`
 
@@ -10,7 +10,7 @@
 - `plan.begin_exchange(src, dst=None, *, op="replace")`
 - `plan.close()`
 
-`dst=None` 表示原地更新。数据形状为 `(local_entity_count, ...)`，支持标量与多分量 payload。`replace` 覆盖接收位置；`sum` 保留目标原值并累加接收值，重复接收索引必须正确累计。计划元数据和内部索引不得暴露为可变别名。
+`dst=None` 表示原地更新。数据形状为 `(local_entity_count, ...)`，支持标量与多分量 payload。阶段 B 的 `replace` 覆盖接收位置；`sum` 将在阶段 D 实现。计划元数据和内部索引不得暴露为可变别名。
 
 ## `HaloRequest`
 

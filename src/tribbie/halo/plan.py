@@ -1,29 +1,62 @@
 from __future__ import annotations
 
-from types import MappingProxyType
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
 
-from .errors import HaloClosedError
+from .errors import (
+    HaloClosedError,
+    InconsistentCommunicationError,
+    InvalidIndexError,
+    InvalidPeerError,
+    PayloadMismatchError,
+    ReplaceConflictError,
+    UnsupportedArrayError,
+)
 from .request import HaloRequest
 
 
+@dataclass(frozen=True, slots=True)
+class HaloEdge:
+    peer: int
+    send_indices: np.ndarray
+    recv_indices: np.ndarray
+
+    def __init__(self, peer: int, send_indices, recv_indices):
+        send = _index_array(send_indices)
+        recv = _index_array(recv_indices)
+        send.setflags(write=False)
+        recv.setflags(write=False)
+        object.__setattr__(self, "peer", int(peer))
+        object.__setattr__(self, "send_indices", send)
+        object.__setattr__(self, "recv_indices", recv)
+
+
 class HaloPlan:
-    """Static Halo metadata and lifecycle contract for stage A."""
+    """Static direct-edge Halo plan with blocking typed-buffer exchange."""
 
     def __init__(
         self,
         *,
+        comm=None,
+        edges: tuple[HaloEdge, ...] = (),
+        entity_count: int | None = None,
         neighbors: tuple[int, ...] = (),
         send_counts: Mapping[int, int] | None = None,
         recv_counts: Mapping[int, int] | None = None,
         supported_dtypes: tuple[np.dtype[Any], ...] = (),
     ):
+        self._comm = comm
+        self._edges = tuple(edges)
+        self._entity_count = entity_count
         self._neighbors = tuple(neighbors)
-        self._send_counts = MappingProxyType(dict(send_counts or {}))
-        self._recv_counts = MappingProxyType(dict(recv_counts or {}))
+        self._send_counts = dict(send_counts or {})
+        self._recv_counts = dict(recv_counts or {})
         self._supported_dtypes = tuple(supported_dtypes)
+        self._buffers = None
+        self._buffer_signature = None
+        self._owns_comm = False
         self._closed = False
 
     @classmethod
@@ -31,8 +64,49 @@ class HaloPlan:
         raise NotImplementedError("global-id plan construction starts in stage E")
 
     @classmethod
-    def from_edges(cls, comm, edges, *, validation="basic"):
-        raise NotImplementedError("direct-edge plan construction starts in stage B")
+    def from_edges(cls, comm, edges, *, validation="basic", entity_count=None):
+        size = comm.Get_size()
+        normalized = tuple(edge if isinstance(edge, HaloEdge) else HaloEdge(*edge) for edge in edges)
+        for edge in normalized:
+            if not 0 <= edge.peer < size:
+                raise InvalidPeerError(f"peer {edge.peer} is outside communicator size {size}")
+            if entity_count is not None:
+                if np.any(edge.send_indices >= entity_count) or np.any(edge.recv_indices >= entity_count):
+                    raise InvalidIndexError("edge index is outside local entity range")
+        grouped: dict[int, list[HaloEdge]] = {}
+        for edge in normalized:
+            grouped.setdefault(edge.peer, []).append(edge)
+        aggregated = []
+        for peer, peer_edges in grouped.items():
+            aggregated.append(
+                HaloEdge(
+                    peer,
+                    np.concatenate([edge.send_indices for edge in peer_edges]),
+                    np.concatenate([edge.recv_indices for edge in peer_edges]),
+                )
+            )
+        normalized = tuple(aggregated)
+        recv_indices = np.concatenate([edge.recv_indices for edge in normalized]) if normalized else np.empty(0, dtype=np.intp)
+        if len(np.unique(recv_indices)) != recv_indices.size:
+            raise ReplaceConflictError("duplicate receive indices are ambiguous for replace")
+        ordered = tuple(sorted(normalized, key=lambda edge: edge.peer))
+        plan_comm = comm.Dup()
+        plan = cls(
+            comm=plan_comm,
+            edges=ordered,
+            entity_count=entity_count,
+            neighbors=tuple(edge.peer for edge in ordered),
+            send_counts={edge.peer: int(edge.send_indices.size) for edge in ordered},
+            recv_counts={edge.peer: int(edge.recv_indices.size) for edge in ordered},
+            supported_dtypes=tuple(np.dtype(code) for code in ("int32", "int64", "float32", "float64", "complex64", "complex128")),
+        )
+        plan._owns_comm = True
+        plan._validate_peer_counts()
+        return plan
+
+    @property
+    def edges(self) -> tuple[HaloEdge, ...]:
+        return self._edges
 
     @property
     def neighbors(self) -> tuple[int, ...]:
@@ -40,11 +114,13 @@ class HaloPlan:
 
     @property
     def send_counts(self) -> Mapping[int, int]:
-        return self._send_counts
+        from types import MappingProxyType
+        return MappingProxyType(self._send_counts)
 
     @property
     def recv_counts(self) -> Mapping[int, int]:
-        return self._recv_counts
+        from types import MappingProxyType
+        return MappingProxyType(self._recv_counts)
 
     @property
     def total_send_count(self) -> int:
@@ -64,7 +140,45 @@ class HaloPlan:
 
     def exchange(self, src, dst=None, *, op="replace"):
         self._ensure_open()
-        raise NotImplementedError("blocking communication starts in stage B")
+        if op == "sum":
+            raise NotImplementedError("sum communication starts in stage D")
+        if op != "replace":
+            raise ValueError(f"unsupported operation: {op}")
+        source = _validate_array(src)
+        if self._entity_count is not None and source.shape[0] != self._entity_count:
+            raise PayloadMismatchError("payload entity count does not match plan")
+        target = source if dst is None else _validate_array(dst)
+        if target.shape != source.shape or target.dtype != source.dtype:
+            raise PayloadMismatchError("src and dst must have matching shape and dtype")
+        if self._entity_count is not None and target.shape[0] != self._entity_count:
+            raise PayloadMismatchError("destination entity count does not match plan")
+        payload_shape = source.shape[1:]
+        signature = (source.dtype.str, payload_shape)
+        if self._buffer_signature != signature:
+            self._buffers = (
+                [np.empty((edge.send_indices.size, *payload_shape), dtype=source.dtype) for edge in self._edges],
+                [np.empty((edge.recv_indices.size, *payload_shape), dtype=source.dtype) for edge in self._edges],
+            )
+            self._buffer_signature = signature
+        send_buffers, recv_buffers = self._buffers
+        for edge, buffer in zip(self._edges, send_buffers):
+            buffer[...] = source[edge.send_indices]
+        if self._comm is not None and self._comm.Get_size() > 1:
+            mpi_type = _mpi_dtype(source.dtype)
+            requests = []
+            for edge, buffer in zip(self._edges, recv_buffers):
+                requests.append(self._comm.Irecv([buffer, mpi_type], source=edge.peer, tag=0))
+            for edge, buffer in zip(self._edges, send_buffers):
+                requests.append(self._comm.Isend([buffer, mpi_type], dest=edge.peer, tag=0))
+            from mpi4py import MPI
+
+            MPI.Request.Waitall(requests)
+        else:
+            for edge, buffer in zip(self._edges, send_buffers):
+                recv_buffers[self._edges.index(edge)][...] = buffer
+        for edge, buffer in zip(self._edges, recv_buffers):
+            target[edge.recv_indices] = buffer
+        return target
 
     def begin_exchange(self, src, dst=None, *, op="replace") -> HaloRequest[Any]:
         self._ensure_open()
@@ -73,8 +187,48 @@ class HaloPlan:
     def close(self) -> None:
         if self._closed:
             raise HaloClosedError("Halo plan is already closed")
+        if self._owns_comm:
+            self._comm.Free()
         self._closed = True
 
     def _ensure_open(self) -> None:
         if self._closed:
             raise HaloClosedError("Halo plan is closed")
+
+    def _validate_peer_counts(self) -> None:
+        local_counts = {
+            edge.peer: (int(edge.send_indices.size), int(edge.recv_indices.size))
+            for edge in self._edges
+        }
+        rank_counts = self._comm.allgather(local_counts)
+        rank = self._comm.Get_rank()
+        for edge in self._edges:
+            remote = rank_counts[edge.peer].get(rank)
+            if remote is None or edge.send_indices.size != remote[1] or edge.recv_indices.size != remote[0]:
+                raise InconsistentCommunicationError(f"communication counts disagree with peer {edge.peer}")
+
+
+def _index_array(values) -> np.ndarray:
+    array = np.asarray(values)
+    if array.ndim != 1 or not np.issubdtype(array.dtype, np.integer):
+        raise InvalidIndexError("indices must be a one-dimensional integer array")
+    if np.any(array < 0):
+        raise InvalidIndexError("indices must be non-negative")
+    return np.array(array, dtype=np.intp, copy=True)
+
+
+def _validate_array(values) -> np.ndarray:
+    if not isinstance(values, np.ndarray) or not np.issubdtype(values.dtype, np.number):
+        raise UnsupportedArrayError("exchange requires a numeric NumPy ndarray")
+    if values.ndim < 1 or not values.flags.c_contiguous:
+        raise UnsupportedArrayError("exchange requires a C-contiguous ndarray")
+    return values
+
+
+def _mpi_dtype(dtype: np.dtype[Any]):
+    from mpi4py import MPI
+
+    try:
+        return MPI._typedict[dtype.char]
+    except (KeyError, AttributeError):
+        raise UnsupportedArrayError(f"no MPI datatype mapping for {dtype}")
