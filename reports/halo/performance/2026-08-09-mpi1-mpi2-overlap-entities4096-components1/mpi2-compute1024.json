@@ -1,0 +1,77 @@
+{
+  "schema": "tribbie.halo.performance.v1",
+  "timestamp_utc": "2026-08-09T06:32:41.051685+00:00",
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.12",
+    "mpi_size": 2
+  },
+  "parameters": {
+    "entities": 4096,
+    "components": 1,
+    "warmup": 3,
+    "repeats": 10,
+    "compute": 1024
+  },
+  "plan": {
+    "build_seconds_max_rank": 0.006255600004806183,
+    "neighbors": [
+      1
+    ],
+    "send_count": 2,
+    "recv_count": 2
+  },
+  "metrics": {
+    "plan_replace_blocking": {
+      "median_seconds": 5.280000186758116e-05,
+      "p10_seconds": 4.507999401539564e-05,
+      "p90_seconds": 9.33300078031607e-05,
+      "max_seconds": 9.719999798107892e-05,
+      "payload_bytes": 16,
+      "effective_bandwidth_bytes_per_second": 303030.2923118624,
+      "temporary_memory_peak_bytes": 4857
+    },
+    "plan_replace_nonblocking": {
+      "median_seconds": 6.210000719875097e-05,
+      "p10_seconds": 5.130999925313517e-05,
+      "p90_seconds": 0.0001129100011894479,
+      "max_seconds": 0.00021469999046530575,
+      "payload_bytes": 16,
+      "effective_bandwidth_bytes_per_second": 257648.9234339704,
+      "temporary_memory_peak_bytes": 5529
+    },
+    "plan_sum_blocking": {
+      "median_seconds": 4.900000203633681e-05,
+      "p10_seconds": 4.807000223081559e-05,
+      "p90_seconds": 5.728000542148947e-05,
+      "max_seconds": 6.70000008540228e-05,
+      "payload_bytes": 16,
+      "effective_bandwidth_bytes_per_second": 326530.59867497394,
+      "temporary_memory_peak_bytes": 4689
+    },
+    "plan_sum_nonblocking": {
+      "median_seconds": 5.515000520972535e-05,
+      "p10_seconds": 5.3670001216232775e-05,
+      "p90_seconds": 6.842999282525852e-05,
+      "max_seconds": 7.500000356230885e-05,
+      "payload_bytes": 16,
+      "effective_bandwidth_bytes_per_second": 290117.83297490067,
+      "temporary_memory_peak_bytes": 5529
+    },
+    "baseline_typed_nonblocking": {
+      "median_seconds": 5.599998985417187e-06,
+      "p10_seconds": 5.49999822396785e-06,
+      "p90_seconds": 6.070001109037547e-06,
+      "max_seconds": 7.599999662488699e-06,
+      "payload_bytes": 16,
+      "effective_bandwidth_bytes_per_second": 2857143.374787243,
+      "temporary_memory_peak_bytes": 0
+    }
+  },
+  "temporary_memory_peak_bytes_max_rank": 5529,
+  "notes": [
+    "Timing samples are communicator-wide maximum rank times.",
+    "The baseline uses typed Irecv/Isend buffers without plan metadata.",
+    "Construction metadata exchange is excluded from runtime exchange timings."
+  ]
+}

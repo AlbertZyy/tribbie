@@ -78,6 +78,9 @@ class HaloPlan:
         self._recv_counts = dict(recv_counts or {})
         self._supported_dtypes = tuple(supported_dtypes)
         self._buffers: _BufferPair | None = None
+        self._replace_conflict = any(
+            len(np.unique(edge.recv_indices)) != edge.recv_indices.size for edge in self._edges
+        )
         self._owns_comm = False
         self._active_request: HaloRequest[Any] | None = None
         self._closed = False
@@ -333,9 +336,7 @@ class HaloPlan:
     ) -> tuple[_Array, _Array, list[_Array], list[_Array]]:
         if op not in {"replace", "sum"}:
             raise ValueError(f"unsupported operation: {op}")
-        if op == "replace" and any(
-            len(np.unique(edge.recv_indices)) != edge.recv_indices.size for edge in self._edges
-        ):
+        if op == "replace" and self._replace_conflict:
             raise ReplaceConflictError("duplicate receive indices are ambiguous for replace")
         source = _validate_array(src)
         if self._supported_dtypes and source.dtype not in self._supported_dtypes:
@@ -371,8 +372,7 @@ class HaloPlan:
             if op == "replace":
                 target[edge.recv_indices] = buffer
             else:
-                for position, index in enumerate(edge.recv_indices):
-                    target[index] += buffer[position]
+                np.add.at(target, edge.recv_indices, buffer)
 
     @staticmethod
     def reduce_and_broadcast(
