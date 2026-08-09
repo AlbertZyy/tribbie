@@ -75,5 +75,4 @@ def test_plan_metadata_is_read_only_and_close_is_terminal():
 def test_stage_a_operations_are_explicitly_deferred():
     plan = HaloPlan()
     assert plan.exchange(np.zeros(0)).shape == (0,)
-    with pytest.raises(NotImplementedError):
-        plan.begin_exchange(np.zeros(0))
+    assert plan.begin_exchange(np.zeros(0)).completed is True

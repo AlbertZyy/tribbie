@@ -6,6 +6,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .errors import (
+    ConcurrentRequestError,
     HaloClosedError,
     InconsistentCommunicationError,
     InvalidIndexError,
@@ -57,6 +58,7 @@ class HaloPlan:
         self._buffers = None
         self._buffer_signature = None
         self._owns_comm = False
+        self._active_request = None
         self._closed = False
 
     @classmethod
@@ -139,7 +141,52 @@ class HaloPlan:
         return self._closed
 
     def exchange(self, src, dst=None, *, op="replace"):
+        return self.begin_exchange(src, dst, op=op).wait()
+
+    def begin_exchange(self, src, dst=None, *, op="replace") -> HaloRequest[Any]:
         self._ensure_open()
+        if self._active_request is not None and not self._active_request.completed:
+            raise ConcurrentRequestError("plan already has an in-flight request")
+        source, target, send_buffers, recv_buffers = self._prepare_exchange(src, dst, op)
+        if self._comm is None or self._comm.Get_size() == 1:
+            for send_buffer, recv_buffer in zip(send_buffers, recv_buffers):
+                recv_buffer[...] = send_buffer
+            self._apply_received(target, recv_buffers)
+            request = HaloRequest.completed_request(target)
+        else:
+            from mpi4py import MPI
+
+            mpi_type = _mpi_dtype(source.dtype)
+            mpi_requests = [
+                self._comm.Irecv([buffer, mpi_type], source=edge.peer, tag=0)
+                for edge, buffer in zip(self._edges, recv_buffers)
+            ]
+            mpi_requests.extend(
+                self._comm.Isend([buffer, mpi_type], dest=edge.peer, tag=0)
+                for edge, buffer in zip(self._edges, send_buffers)
+            )
+
+            def poll() -> tuple[bool, Any | None]:
+                complete = MPI.Request.Testall(mpi_requests)
+                if complete:
+                    self._apply_received(target, recv_buffers)
+                    return True, target
+                return False, None
+
+            def wait() -> Any:
+                MPI.Request.Waitall(mpi_requests)
+                self._apply_received(target, recv_buffers)
+                return target
+
+            request = HaloRequest(
+                poll=poll,
+                wait_fn=wait,
+                on_complete=lambda: self._release_request(request),
+            )
+        self._active_request = request
+        return request
+
+    def _prepare_exchange(self, src, dst, op):
         if op == "sum":
             raise NotImplementedError("sum communication starts in stage D")
         if op != "replace":
@@ -163,30 +210,21 @@ class HaloPlan:
         send_buffers, recv_buffers = self._buffers
         for edge, buffer in zip(self._edges, send_buffers):
             buffer[...] = source[edge.send_indices]
-        if self._comm is not None and self._comm.Get_size() > 1:
-            mpi_type = _mpi_dtype(source.dtype)
-            requests = []
-            for edge, buffer in zip(self._edges, recv_buffers):
-                requests.append(self._comm.Irecv([buffer, mpi_type], source=edge.peer, tag=0))
-            for edge, buffer in zip(self._edges, send_buffers):
-                requests.append(self._comm.Isend([buffer, mpi_type], dest=edge.peer, tag=0))
-            from mpi4py import MPI
+        return source, target, send_buffers, recv_buffers
 
-            MPI.Request.Waitall(requests)
-        else:
-            for edge, buffer in zip(self._edges, send_buffers):
-                recv_buffers[self._edges.index(edge)][...] = buffer
+    def _apply_received(self, target, recv_buffers):
         for edge, buffer in zip(self._edges, recv_buffers):
             target[edge.recv_indices] = buffer
-        return target
 
-    def begin_exchange(self, src, dst=None, *, op="replace") -> HaloRequest[Any]:
-        self._ensure_open()
-        raise NotImplementedError("non-blocking communication starts in stage C")
+    def _release_request(self, request) -> None:
+        if self._active_request is request:
+            self._active_request = None
 
     def close(self) -> None:
         if self._closed:
             raise HaloClosedError("Halo plan is already closed")
+        if self._active_request is not None and not self._active_request.completed:
+            raise HaloClosedError("cannot close plan with an in-flight request")
         if self._owns_comm:
             self._comm.Free()
         self._closed = True
