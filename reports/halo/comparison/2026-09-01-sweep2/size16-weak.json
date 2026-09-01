@@ -1,0 +1,85 @@
+{
+  "schema": "tribbie.halo.comparison.v1",
+  "timestamp_utc": "2026-09-01T02:01:19.974827+00:00",
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.12",
+    "mpi_size": 16,
+    "fealpy_path": "D:\\suanhai_repo\\fealpy"
+  },
+  "parameters": {
+    "entities_list": [
+      100000
+    ],
+    "halo_list": [
+      1024
+    ],
+    "components_list": [
+      1
+    ],
+    "warmup": 5,
+    "repeats": 20
+  },
+  "configs": [
+    {
+      "entities": 100000,
+      "halo": 1024,
+      "components": 1,
+      "send_entities": 2048,
+      "payload_bytes": 16384,
+      "index_bytes_sync": 16384,
+      "correct": true,
+      "halo_plan_build_seconds_max_rank": 0.024500899948179722,
+      "entity_mpi_build_seconds_max_rank": 1.7700018361210823e-05,
+      "metrics": {
+        "halo_plan_replace": {
+          "median_seconds": 0.000238100066781044,
+          "p10_seconds": 0.00020448004361242055,
+          "p90_seconds": 0.000768120028078556,
+          "max_seconds": 0.0023169999476522207,
+          "payload_bytes": 16384,
+          "effective_bandwidth_bytes_per_second": 68811404.47166136,
+          "temporary_memory_peak_bytes": 9504
+        },
+        "entity_mpi_replace": {
+          "median_seconds": 0.0007546000415459275,
+          "p10_seconds": 0.0006185700651258231,
+          "p90_seconds": 0.002015979937277736,
+          "max_seconds": 0.011898299911990762,
+          "payload_bytes": 16384,
+          "effective_bandwidth_bytes_per_second": 21712164.190230586,
+          "temporary_memory_peak_bytes": 123368
+        },
+        "halo_plan_sum": {
+          "median_seconds": 0.00027459999546408653,
+          "p10_seconds": 0.0002294199075549841,
+          "p90_seconds": 0.00048423004336655215,
+          "max_seconds": 0.0031991000287234783,
+          "payload_bytes": 16384,
+          "effective_bandwidth_bytes_per_second": 59664968.210615925,
+          "temporary_memory_peak_bytes": 9144
+        },
+        "entity_mpi_sum": {
+          "median_seconds": 0.001002949895337224,
+          "p10_seconds": 0.0008550900267437101,
+          "p90_seconds": 0.0015315801138058305,
+          "max_seconds": 0.0020149999763816595,
+          "payload_bytes": 16384,
+          "effective_bandwidth_bytes_per_second": 16335811.06710338,
+          "temporary_memory_peak_bytes": 123371
+        }
+      },
+      "speedup_replace": 3.169255900460772,
+      "speedup_sum": 3.6524031751792014
+    }
+  ],
+  "notes": [
+    "Timing samples are communicator-wide maximum rank times.",
+    "HaloPlan.exchange uses point-to-point typed Isend/Irecv; EntityMPI.sync uses dense comm.alltoall over pickled SparseData1D objects.",
+    "Both sides apply the received halo in-place (no full-array copy), so the measured difference isolates the communication path.",
+    "payload_bytes counts useful payload only; index_bytes_sync is the extra int64 index tensor shipped by sync each call.",
+    "EntityMPI.sync_add (the out-of-place reduce API) additionally copies the full array and is not measured here; its extra cost grows with E.",
+    "speedup_* = entity_mpi_median / halo_plan_median (>1 means HaloPlan is faster).",
+    "Construction (from_edges / EntityMPI init) is excluded from exchange timings."
+  ]
+}

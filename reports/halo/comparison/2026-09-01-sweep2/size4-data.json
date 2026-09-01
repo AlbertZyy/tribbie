@@ -1,0 +1,344 @@
+{
+  "schema": "tribbie.halo.comparison.v1",
+  "timestamp_utc": "2026-09-01T02:01:30.648961+00:00",
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.12",
+    "mpi_size": 4,
+    "fealpy_path": "D:\\suanhai_repo\\fealpy"
+  },
+  "parameters": {
+    "entities_list": [
+      10000,
+      100000,
+      1000000
+    ],
+    "halo_list": [
+      625,
+      6250,
+      62500
+    ],
+    "components_list": [
+      1
+    ],
+    "warmup": 5,
+    "repeats": 20
+  },
+  "configs": [
+    {
+      "entities": 10000,
+      "halo": 625,
+      "components": 1,
+      "send_entities": 1250,
+      "payload_bytes": 10000,
+      "index_bytes_sync": 10000,
+      "correct": true,
+      "halo_plan_build_seconds_max_rank": 0.011281399987637997,
+      "entity_mpi_build_seconds_max_rank": 1.300009898841381e-05,
+      "metrics": {
+        "halo_plan_replace": {
+          "median_seconds": 9.3999900855124e-05,
+          "p10_seconds": 8.643006440252065e-05,
+          "p90_seconds": 0.00011690997052937747,
+          "max_seconds": 0.00012580002658069134,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 106383090.92913148,
+          "temporary_memory_peak_bytes": 6288
+        },
+        "entity_mpi_replace": {
+          "median_seconds": 0.00016400008462369442,
+          "p10_seconds": 0.00015067989006638526,
+          "p90_seconds": 0.00020362993236631158,
+          "max_seconds": 0.0002625000197440386,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 60975578.29281278,
+          "temporary_memory_peak_bytes": 77531
+        },
+        "halo_plan_sum": {
+          "median_seconds": 0.00010159995872527361,
+          "p10_seconds": 8.789007551968098e-05,
+          "p90_seconds": 0.00018037005793303257,
+          "max_seconds": 0.0007229000329971313,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 98425236.8353811,
+          "temporary_memory_peak_bytes": 6880
+        },
+        "entity_mpi_sum": {
+          "median_seconds": 0.00030025001615285873,
+          "p10_seconds": 0.00023697996512055396,
+          "p90_seconds": 0.0005053299944847823,
+          "max_seconds": 0.0005406001582741737,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 33305576.892655194,
+          "temporary_memory_peak_bytes": 77364
+        }
+      },
+      "speedup_replace": 1.7446835914907741,
+      "speedup_sum": 2.9552178949672125
+    },
+    {
+      "entities": 100000,
+      "halo": 625,
+      "components": 1,
+      "send_entities": 1250,
+      "payload_bytes": 10000,
+      "index_bytes_sync": 10000,
+      "correct": true,
+      "halo_plan_build_seconds_max_rank": 0.0001975002232939005,
+      "entity_mpi_build_seconds_max_rank": 6.299931555986404e-06,
+      "metrics": {
+        "halo_plan_replace": {
+          "median_seconds": 9.184994269162416e-05,
+          "p10_seconds": 8.590016514062882e-05,
+          "p90_seconds": 0.0001035498455166817,
+          "max_seconds": 0.00012729992158710957,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 108873230.69513363,
+          "temporary_memory_peak_bytes": 6024
+        },
+        "entity_mpi_replace": {
+          "median_seconds": 0.00022074999287724495,
+          "p10_seconds": 0.00019807987846434116,
+          "p90_seconds": 0.00045171005185693506,
+          "max_seconds": 0.00046609994024038315,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 45300114.711943924,
+          "temporary_memory_peak_bytes": 78707
+        },
+        "halo_plan_sum": {
+          "median_seconds": 0.00010790000669658184,
+          "p10_seconds": 8.313003927469253e-05,
+          "p90_seconds": 0.00013544007670134308,
+          "max_seconds": 0.0002150998916476965,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 92678400.17953205,
+          "temporary_memory_peak_bytes": 6856
+        },
+        "entity_mpi_sum": {
+          "median_seconds": 0.000257750041782856,
+          "p10_seconds": 0.0002180100418627262,
+          "p90_seconds": 0.0002966400468721986,
+          "max_seconds": 0.0004205000586807728,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 38797277.90082997,
+          "temporary_memory_peak_bytes": 77416
+        }
+      },
+      "speedup_replace": 2.4033764900473393,
+      "speedup_sum": 2.3887861518642635
+    },
+    {
+      "entities": 100000,
+      "halo": 6250,
+      "components": 1,
+      "send_entities": 12500,
+      "payload_bytes": 100000,
+      "index_bytes_sync": 100000,
+      "correct": true,
+      "halo_plan_build_seconds_max_rank": 0.002177000045776367,
+      "entity_mpi_build_seconds_max_rank": 1.95999164134264e-05,
+      "metrics": {
+        "halo_plan_replace": {
+          "median_seconds": 0.00011354987509548664,
+          "p10_seconds": 0.00010683999862521887,
+          "p90_seconds": 0.00012756991200149061,
+          "max_seconds": 0.00016520009376108646,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 880670277.4081236,
+          "temporary_memory_peak_bytes": 51024
+        },
+        "entity_mpi_replace": {
+          "median_seconds": 0.00043919996824115515,
+          "p10_seconds": 0.00038883015513420106,
+          "p90_seconds": 0.0005563800921663643,
+          "max_seconds": 0.0006730000022798777,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 227686719.56071767,
+          "temporary_memory_peak_bytes": 710901
+        },
+        "halo_plan_sum": {
+          "median_seconds": 0.00020905002020299435,
+          "p10_seconds": 0.00014922996051609517,
+          "p90_seconds": 0.0002647401299327612,
+          "max_seconds": 0.0003286998253315687,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 478354414.42625433,
+          "temporary_memory_peak_bytes": 50928
+        },
+        "entity_mpi_sum": {
+          "median_seconds": 0.0013681499985978007,
+          "p10_seconds": 0.0009041900280863047,
+          "p90_seconds": 0.001631909958086908,
+          "max_seconds": 0.0017674998380243778,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 73091400.87160671,
+          "temporary_memory_peak_bytes": 707161
+        }
+      },
+      "speedup_replace": 3.8679035786857714,
+      "speedup_sum": 6.544605914265317
+    },
+    {
+      "entities": 1000000,
+      "halo": 625,
+      "components": 1,
+      "send_entities": 1250,
+      "payload_bytes": 10000,
+      "index_bytes_sync": 10000,
+      "correct": true,
+      "halo_plan_build_seconds_max_rank": 0.00040769996121525764,
+      "entity_mpi_build_seconds_max_rank": 0.00011479994282126427,
+      "metrics": {
+        "halo_plan_replace": {
+          "median_seconds": 0.0001545000122860074,
+          "p10_seconds": 0.0001387998927384615,
+          "p90_seconds": 0.0001798300771042705,
+          "max_seconds": 0.0002389000728726387,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 64724913.94685584,
+          "temporary_memory_peak_bytes": 6024
+        },
+        "entity_mpi_replace": {
+          "median_seconds": 0.00031869998201727867,
+          "p10_seconds": 0.00028812999371439216,
+          "p90_seconds": 0.00037921008188277486,
+          "max_seconds": 0.0004382000770419836,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 31377472.746320516,
+          "temporary_memory_peak_bytes": 77928
+        },
+        "halo_plan_sum": {
+          "median_seconds": 0.0001572000328451395,
+          "p10_seconds": 0.00014403003733605147,
+          "p90_seconds": 0.00019980978686362505,
+          "max_seconds": 0.00021089985966682434,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 63613218.26090949,
+          "temporary_memory_peak_bytes": 6856
+        },
+        "entity_mpi_sum": {
+          "median_seconds": 0.000350099871866405,
+          "p10_seconds": 0.0003331500804051757,
+          "p90_seconds": 0.00041273010428994895,
+          "max_seconds": 0.0004749998915940523,
+          "payload_bytes": 10000,
+          "effective_bandwidth_bytes_per_second": 28563278.091732383,
+          "temporary_memory_peak_bytes": 77344
+        }
+      },
+      "speedup_replace": 2.0627828910932866,
+      "speedup_sum": 2.227097956215407
+    },
+    {
+      "entities": 1000000,
+      "halo": 6250,
+      "components": 1,
+      "send_entities": 12500,
+      "payload_bytes": 100000,
+      "index_bytes_sync": 100000,
+      "correct": true,
+      "halo_plan_build_seconds_max_rank": 0.0022429998498409986,
+      "entity_mpi_build_seconds_max_rank": 1.1800089851021767e-05,
+      "metrics": {
+        "halo_plan_replace": {
+          "median_seconds": 0.0002584499306976795,
+          "p10_seconds": 0.00024433010257780553,
+          "p90_seconds": 0.0002916101133450866,
+          "max_seconds": 0.0003144999500364065,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 386922138.9615093,
+          "temporary_memory_peak_bytes": 51048
+        },
+        "entity_mpi_replace": {
+          "median_seconds": 0.00034579995553940535,
+          "p10_seconds": 0.0002994800684973598,
+          "p90_seconds": 0.0005105501506477595,
+          "max_seconds": 0.0005369000136852264,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 289184536.8921818,
+          "temporary_memory_peak_bytes": 707365
+        },
+        "halo_plan_sum": {
+          "median_seconds": 0.00025949988048523664,
+          "p10_seconds": 0.00019308996852487325,
+          "p90_seconds": 0.00028513006400316955,
+          "max_seconds": 0.00032590003684163094,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 385356632.19964045,
+          "temporary_memory_peak_bytes": 50928
+        },
+        "entity_mpi_sum": {
+          "median_seconds": 0.0008391499286517501,
+          "p10_seconds": 0.0007510200375691056,
+          "p90_seconds": 0.0011536199599504473,
+          "max_seconds": 0.0014048002194613218,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 119168216.0548694,
+          "temporary_memory_peak_bytes": 707319
+        }
+      },
+      "speedup_replace": 1.3379765845010152,
+      "speedup_sum": 3.23371990415807
+    },
+    {
+      "entities": 1000000,
+      "halo": 62500,
+      "components": 1,
+      "send_entities": 125000,
+      "payload_bytes": 1000000,
+      "index_bytes_sync": 1000000,
+      "correct": true,
+      "halo_plan_build_seconds_max_rank": 0.01963310013525188,
+      "entity_mpi_build_seconds_max_rank": 1.9799917936325073e-05,
+      "metrics": {
+        "halo_plan_replace": {
+          "median_seconds": 0.0008027999429032207,
+          "p10_seconds": 0.0006857600063085556,
+          "p90_seconds": 0.001390110026113689,
+          "max_seconds": 0.001569999847561121,
+          "payload_bytes": 1000000,
+          "effective_bandwidth_bytes_per_second": 1245640347.6856654,
+          "temporary_memory_peak_bytes": 501024
+        },
+        "entity_mpi_replace": {
+          "median_seconds": 0.006942900130525231,
+          "p10_seconds": 0.005004469980485737,
+          "p90_seconds": 0.007928780000656844,
+          "max_seconds": 0.00841389992274344,
+          "payload_bytes": 1000000,
+          "effective_bandwidth_bytes_per_second": 144032030.0163024,
+          "temporary_memory_peak_bytes": 7007196
+        },
+        "halo_plan_sum": {
+          "median_seconds": 0.0009384999284520745,
+          "p10_seconds": 0.0005896699847653508,
+          "p90_seconds": 0.0017723500262945891,
+          "max_seconds": 0.0022267999593168497,
+          "payload_bytes": 1000000,
+          "effective_bandwidth_bytes_per_second": 1065530182.4576175,
+          "temporary_memory_peak_bytes": 500952
+        },
+        "entity_mpi_sum": {
+          "median_seconds": 0.011356400093063712,
+          "p10_seconds": 0.010085680056363344,
+          "p90_seconds": 0.012488809879869224,
+          "max_seconds": 0.015829599928110838,
+          "payload_bytes": 1000000,
+          "effective_bandwidth_bytes_per_second": 88056073.38638784,
+          "temporary_memory_peak_bytes": 7007276
+        }
+      },
+      "speedup_replace": 8.6483565325343,
+      "speedup_sum": 12.100587063223882
+    }
+  ],
+  "notes": [
+    "Timing samples are communicator-wide maximum rank times.",
+    "HaloPlan.exchange uses point-to-point typed Isend/Irecv; EntityMPI.sync uses dense comm.alltoall over pickled SparseData1D objects.",
+    "Both sides apply the received halo in-place (no full-array copy), so the measured difference isolates the communication path.",
+    "payload_bytes counts useful payload only; index_bytes_sync is the extra int64 index tensor shipped by sync each call.",
+    "EntityMPI.sync_add (the out-of-place reduce API) additionally copies the full array and is not measured here; its extra cost grows with E.",
+    "speedup_* = entity_mpi_median / halo_plan_median (>1 means HaloPlan is faster).",
+    "Construction (from_edges / EntityMPI init) is excluded from exchange timings."
+  ]
+}

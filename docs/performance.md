@@ -40,6 +40,14 @@ uv run python benchmarks/halo/render_report.py \
 
 该运行覆盖 MPI 1、MPI 2，以及 MPI 2 加 `--compute 1024`。环境为 Python 3.12.12、Microsoft MPI 10.1.12498.52、Windows 11 主机；绝对时间仅作为本机基线，不作为跨平台验收阈值。
 
+## Comparison with FEALPy `EntityMPI.sync`
+
+`benchmarks/halo/comparison/compare_sync.py` 对比 `HaloPlan.exchange` 与 fealpy `EntityMPI.sync`（数据规模 × 并行规模）：
+
+- 语义对齐：两侧构造同一「1-D 周期链、左右各共享 `H` 个 halo」问题，就地 apply，断言 `exchange(op="sum") == sync + np.add.at`、`exchange(op="replace") == sync + scatter`，隔离纯通信路径。
+- 关键差异：`exchange` 用点对点 typed `Isend`/`Irecv`（只与真实邻居通信）；`sync` 用稠密 `comm.alltoall` 传输被 pickle 的 `SparseData1D`（数据 + 每消息一个 int64 索引张量）。
+- 运行：`benchmarks/halo/comparison/run_comparison.ps1`（弱扩展 / 强扩展 / 数据规模，`size ∈ {2,4,8,16}`）；需先起 MPI 进程管理器（管理员启动 `MsMpiLaunchSvc`，或普通用户 `smpd -d`）。结果归档于 `reports/halo/comparison/<run-id>/`，`speedup > 1` 表示 `exchange` 更快。
+
 ## Interpretation and limitations
 
 - 运行期仅传输真实邻居的 typed NumPy payload；全局编号和索引不进入运行期消息。
