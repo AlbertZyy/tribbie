@@ -1,0 +1,147 @@
+{
+  "schema": "tribbie.halo.comparison.v2",
+  "timestamp_utc": "2026-09-02T03:20:12.270456+00:00",
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.12",
+    "mpi_size": 8,
+    "fealpy_path": "D:\\suanhai_repo\\fealpy"
+  },
+  "parameters": {
+    "topology": "ring",
+    "entities_list": [
+      11718,
+      117188,
+      1171876
+    ],
+    "halo_list": [
+      391,
+      3906,
+      39062
+    ],
+    "warmup": 3,
+    "repeats": 10
+  },
+  "configs": [
+    {
+      "topology": "ring",
+      "entities": 11718,
+      "halo": 391,
+      "local_count": 12500,
+      "payload_bytes": 100000,
+      "halo_entities": 782,
+      "correct": true,
+      "metrics": {
+        "reduce_and_broadcast": {
+          "median_seconds": 5.239993333816528e-05,
+          "p10_seconds": 4.58601163700223e-05,
+          "p90_seconds": 6.538000889122486e-05,
+          "max_seconds": 7.239985279738903e-05,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 1908399374.3779325
+        },
+        "sync_add": {
+          "median_seconds": 0.00030835007783025503,
+          "p10_seconds": 0.00021617014426738023,
+          "p90_seconds": 0.0004567400785163045,
+          "max_seconds": 0.0005021002143621445,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 324306712.36946934
+        },
+        "sync_add_no_copy": {
+          "median_seconds": 0.0002857500221580267,
+          "p10_seconds": 0.00027828002348542216,
+          "p90_seconds": 0.00038065998815000056,
+          "max_seconds": 0.0003839000128209591,
+          "payload_bytes": 100000,
+          "effective_bandwidth_bytes_per_second": 349956228.3312705
+        }
+      },
+      "speedup_copy": 5.884550956206455,
+      "speedup_no_copy": 5.453251635148585
+    },
+    {
+      "topology": "ring",
+      "entities": 117188,
+      "halo": 3906,
+      "local_count": 125000,
+      "payload_bytes": 1000000,
+      "halo_entities": 7812,
+      "correct": true,
+      "metrics": {
+        "reduce_and_broadcast": {
+          "median_seconds": 0.00025004998315125704,
+          "p10_seconds": 0.0002226700773462653,
+          "p90_seconds": 0.0002948300680145621,
+          "max_seconds": 0.00038330000825226307,
+          "payload_bytes": 1000000,
+          "effective_bandwidth_bytes_per_second": 3999200429.440112
+        },
+        "sync_add": {
+          "median_seconds": 0.002388100023381412,
+          "p10_seconds": 0.002035040105693042,
+          "p90_seconds": 0.0031238500960171223,
+          "max_seconds": 0.0031846000347286463,
+          "payload_bytes": 1000000,
+          "effective_bandwidth_bytes_per_second": 418742929.61316484
+        },
+        "sync_add_no_copy": {
+          "median_seconds": 0.0018968500662595034,
+          "p10_seconds": 0.0017515899846330286,
+          "p90_seconds": 0.002440340002067387,
+          "max_seconds": 0.002652199938893318,
+          "payload_bytes": 1000000,
+          "effective_bandwidth_bytes_per_second": 527189796.2773366
+        }
+      },
+      "speedup_copy": 9.550490639052885,
+      "speedup_no_copy": 7.585883599568511
+    },
+    {
+      "topology": "ring",
+      "entities": 1171876,
+      "halo": 39062,
+      "local_count": 1250000,
+      "payload_bytes": 10000000,
+      "halo_entities": 78124,
+      "correct": true,
+      "metrics": {
+        "reduce_and_broadcast": {
+          "median_seconds": 0.0036824499256908894,
+          "p10_seconds": 0.002997149876318872,
+          "p90_seconds": 0.004681359906680882,
+          "max_seconds": 0.0051021999679505825,
+          "payload_bytes": 10000000,
+          "effective_bandwidth_bytes_per_second": 2715583429.9970374
+        },
+        "sync_add": {
+          "median_seconds": 0.022785300039686263,
+          "p10_seconds": 0.021138520003296433,
+          "p90_seconds": 0.024990930105559528,
+          "max_seconds": 0.025083000073209405,
+          "payload_bytes": 10000000,
+          "effective_bandwidth_bytes_per_second": 438879452.2162322
+        },
+        "sync_add_no_copy": {
+          "median_seconds": 0.020992449950426817,
+          "p10_seconds": 0.019514310057274997,
+          "p90_seconds": 0.023440790036693214,
+          "max_seconds": 0.024269600166007876,
+          "payload_bytes": 10000000,
+          "effective_bandwidth_bytes_per_second": 476361740.7027178
+        }
+      },
+      "speedup_copy": 6.187538323528285,
+      "speedup_no_copy": 5.700674924042119
+    }
+  ],
+  "notes": [
+    "Compares HaloPlan.reduce_and_broadcast (two_way from_global_ids) with EntityMPI.sync_add (copy and no-copy variants).",
+    "Both paths are mathematically equivalent: every copy of every shared entity ends up with the global sum of all contributions.",
+    "Construction time is excluded and not compared (from_global_ids discovery vs sharing_pairs are not comparable).",
+    "speedup_copy = sync_add_median / reduce_and_broadcast_median; speedup_no_copy = sync_add_no_copy_median / reduce_and_broadcast_median (>1 means reduce_and_broadcast is faster).",
+    "sync_add (copy) is fealpy's native out-of-place API (full-array copy); sync_add_no_copy applies the same reduction in-place.",
+    "tracemalloc is disabled: the full-array copy is a real cost being measured, and tracemalloc would distort it.",
+    "Timing samples are communicator-wide maximum rank times."
+  ]
+}

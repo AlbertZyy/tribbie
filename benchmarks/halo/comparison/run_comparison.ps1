@@ -1,4 +1,4 @@
-# Run the HaloPlan.exchange vs EntityMPI.sync comparison across MPI sizes.
+# Run the reduce-and-broadcast vs sync_add comparison across topologies and sizes.
 #
 # PREREQUISITE: multi-rank launch needs a running MPI process manager. Either:
 #   (a) the MS-MPI Launch Service (admin):
@@ -8,10 +8,11 @@
 # Then run:
 #     powershell -ExecutionPolicy Bypass -File run_comparison.ps1
 param(
-    [int[]]$Sizes = @(2, 4, 8, 16),
+    [int[]]$RingSizes = @(2, 4, 8, 16),
+    [int[]]$GridSizes = @(4, 8, 16),
     [string]$RunId = (Get-Date -Format "yyyy-MM-dd-HHmmss"),
-    [int]$Warmup = 5,
-    [int]$Repeats = 20
+    [int]$Warmup = 3,
+    [int]$Repeats = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,32 +21,50 @@ $bench = "D:\repo\tribbie\benchmarks\halo\comparison\compare_sync.py"
 $outDir = "D:\repo\tribbie\reports\halo\comparison\$RunId"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-function Invoke-Bench([int]$size, [string]$entitiesList, [string]$haloList, [string]$tag) {
-    $out = Join-Path $outDir "size${size}-${tag}.json"
+# Payload targets (bytes).  The 100MB case is only run at small sizes (<=4 ranks)
+# because the per-rank construction memory (gid/owner arrays + discovery) plus the
+# payload does not fit 16 concurrent ranks on this host.
+$smallPayloads = @(100000, 1000000, 10000000)
+$largePayloads = @(100000, 1000000, 10000000, 100000000)
+
+function Get-Params([string]$topology, [int[]]$payloads) {
+    $entities = @(); $halos = @()
+    foreach ($p in $payloads) {
+        $N = [int]($p / 8)
+        if ($topology -eq "ring") {
+            $H = [math]::Max(1, [int]($N / 32))
+            $entities += ($N - 2 * $H); $halos += $H
+        } else {
+            $n = [int][math]::Round([math]::Sqrt($N))
+            $H = [math]::Max(1, [int]($n / 16))
+            $entities += $n; $halos += $H
+        }
+    }
+    return @{ entities = $entities; halos = $halos }
+}
+
+function Invoke-Bench([int]$size, [string]$topology, [string]$entitiesList, [string]$haloList) {
+    $out = Join-Path $outDir "${topology}-size${size}.json"
     $cmdArgs = @("-n", "$size", $py, $bench,
+                 "--topology", $topology,
                  "--entities-list", $entitiesList,
-                 "--components-list", "1",
+                 "--halo-list", $haloList,
                  "--warmup", "$Warmup", "--repeats", "$Repeats",
                  "--output", $out)
-    if ($haloList) { $cmdArgs += @("--halo-list", $haloList) }
-    Write-Host "== mpiexec -n $size ($tag) -> $out"
+    Write-Host "== mpiexec -n $size ($topology) -> $out"
     & mpiexec @cmdArgs
-    if ($LASTEXITCODE -ne 0) { throw "mpiexec failed for size=$size tag=$tag" }
+    if ($LASTEXITCODE -ne 0) { throw "mpiexec failed for $topology size=$size" }
 }
 
-# Weak scaling: constant per-rank work (E=1e5, H=1024) across all sizes.
-foreach ($s in $Sizes) {
-    Invoke-Bench $s "100000" "1024" "weak"
+foreach ($s in $RingSizes) {
+    $payloads = if ($s -le 4) { $largePayloads } else { $smallPayloads }
+    $params = Get-Params "ring" $payloads
+    Invoke-Bench $s "ring" ($params.entities -join ",") ($params.halos -join ",")
 }
-
-# Strong scaling: constant global problem (1e6 entities split across ranks).
-foreach ($s in $Sizes) {
-    $e = [int](1000000 / $s)
-    $h = [int]([math]::Max(1, $e / 16))
-    Invoke-Bench $s "$e" "$h" "strong"
+foreach ($s in $GridSizes) {
+    $payloads = if ($s -le 4) { $largePayloads } else { $smallPayloads }
+    $params = Get-Params "grid" $payloads
+    Invoke-Bench $s "grid" ($params.entities -join ",") ($params.halos -join ",")
 }
-
-# Data scale: fixed size=4, sweep per-rank entity count (H = E/16).
-Invoke-Bench 4 "10000,100000,1000000" "" "data"
 
 Write-Host "Done. Outputs in $outDir"

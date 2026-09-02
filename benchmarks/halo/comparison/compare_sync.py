@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import platform
 import statistics
 import sys
 import time
-import tracemalloc
 import types
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -17,7 +17,7 @@ from typing import Any, Callable
 import numpy as np
 from mpi4py import MPI
 
-from tribbie.halo import HaloEdge, HaloPlan
+from tribbie.halo import HaloPlan
 
 
 # ---------------------------------------------------------------------------
@@ -54,17 +54,19 @@ class Measurement:
     max_seconds: float
     payload_bytes: int
     effective_bandwidth_bytes_per_second: float
-    temporary_memory_peak_bytes: int
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="HaloPlan.exchange vs EntityMPI.sync comparison")
-    parser.add_argument("--entities-list", type=str, default="10000,100000,1000000")
-    parser.add_argument("--halo-list", type=str, default=None,
-                        help="Explicit halo entities per direction (csv). If omitted, H=E//16.")
-    parser.add_argument("--components-list", type=str, default="1")
-    parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--repeats", type=int, default=20)
+    parser = argparse.ArgumentParser(
+        description="HaloPlan.reduce_and_broadcast vs EntityMPI.sync_add comparison"
+    )
+    parser.add_argument("--topology", choices=("ring", "grid"), default="ring")
+    parser.add_argument("--entities-list", type=str, default="100000",
+                        help="ring: owned entities E per rank; grid: owned side length n.")
+    parser.add_argument("--halo-list", type=str, default="1024",
+                        help="Halo width H per direction.")
+    parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--fealpy-path", type=Path, default=Path(r"D:\suanhai_repo\fealpy"))
     parser.add_argument("--no-assert", action="store_true",
@@ -80,95 +82,196 @@ def synchronized_max(comm: MPI.Comm, elapsed: float) -> float:
     return float(comm.allreduce(elapsed, op=MPI.MAX))
 
 
-def make_payload(shape: tuple[int, ...], rank: int, dtype: np.dtype[Any]) -> np.ndarray:
-    values = np.arange(np.prod(shape), dtype=dtype).reshape(shape)
+def make_payload(local_count: int, rank: int, dtype: np.dtype[Any]) -> np.ndarray:
+    values = np.arange(local_count, dtype=dtype)
     return values + dtype.type(rank)
 
 
-def payload_shape(entities: int, components: int) -> tuple[int, ...]:
-    return (entities,) if components == 1 else (entities, components)
+def factor_grid(size: int) -> tuple[int, int]:
+    """Split ``size`` into ``(Px, Py)`` with ``Py`` the largest factor <= sqrt(size)."""
+    for py in range(math.isqrt(size), 0, -1):
+        if size % py == 0:
+            return size // py, py
+    return size, 1
 
 
-def build_topology(rank: int, size: int, entities: int, halo: int):
-    """Return (halo_edges, sharing_pairs) for a 1-D periodic halo exchange.
+# ---------------------------------------------------------------------------
+# Metadata generators.  Each returns (global_ids, owners, sharing_pairs) where
+# sharing_pairs[i] is either None or an (index_self, index_other) tuple for the
+# peer rank i.  Both the tribbie plan (from_global_ids) and the EntityMPI plan
+# are built from the SAME metadata, so they describe the same distributed
+# entity set, owners, and sharing relationships.
+# ---------------------------------------------------------------------------
+def generate_ring(rank: int, size: int, entities: int, halo: int):
+    """1-D periodic ring: each rank owns E entities, shares H with each neighbor.
 
-    Every rank shares its left ``[0, halo)`` block with the previous rank and
-    its right ``[entities-halo, entities)`` block with the next rank.  The two
-    representations are aligned so that ``exchange(op="sum")`` equals
-    ``sync_add`` and ``exchange(op="replace")`` equals ``sync`` + index apply.
+    Local layout: [0,H) left ghosts (owned by prev), [H,E+H) owned,
+    [E+H,E+2H) right ghosts (owned by next).
     """
+    if size < 2:
+        raise ValueError("ring requires size >= 2")
     if entities < 2 * halo:
-        raise ValueError("entities must be at least twice halo_entities")
-    left = np.arange(halo, dtype=np.intp)
-    right = np.arange(entities - halo, entities, dtype=np.intp)
+        raise ValueError("entities must be at least twice halo")
+
     prev = (rank - 1) % size
     nxt = (rank + 1) % size
 
-    if size == 1:
-        return [], [None]
+    left_gids = prev * entities + (entities - halo) + np.arange(halo, dtype=np.int64)
+    owned_gids = rank * entities + np.arange(entities, dtype=np.int64)
+    right_gids = nxt * entities + np.arange(halo, dtype=np.int64)
+    global_ids = np.concatenate([left_gids, owned_gids, right_gids])
+    owners = np.concatenate([
+        np.full(halo, prev, dtype=np.int32),
+        np.full(entities, rank, dtype=np.int32),
+        np.full(halo, nxt, dtype=np.int32),
+    ])
 
+    # Full bidirectional sharing with a neighbour: my left ghosts [0,H) and my
+    # owned leftmost [H,2H) are shared with prev; my owned rightmost [E,E+H)
+    # and my right ghosts [E+H,E+2H) are shared with next.  This mirrors
+    # dist_from_masks, which exposes BOTH owned-shared and ghost-shared entities.
+    pairs: list[Any] = [None] * size
     if size == 2:
         peer = 1 - rank
-        edges = [HaloEdge(peer, left, left), HaloEdge(peer, right, right)]
-        merged = np.concatenate([left, right])
-        pairs = [None, None]
-        pairs[peer] = (merged, merged)  # (index_self, index_other)
-        return edges, pairs
+        index_self = np.concatenate([
+            np.arange(2 * halo, dtype=np.intp),
+            np.arange(entities, entities + 2 * halo, dtype=np.intp),
+        ])
+        index_other = np.concatenate([
+            np.arange(entities, entities + 2 * halo, dtype=np.intp),
+            np.arange(2 * halo, dtype=np.intp),
+        ])
+        pairs[peer] = (index_self, index_other)
+    else:
+        pairs[prev] = (
+            np.arange(2 * halo, dtype=np.intp),
+            np.arange(entities, entities + 2 * halo, dtype=np.intp),
+        )
+        pairs[nxt] = (
+            np.arange(entities, entities + 2 * halo, dtype=np.intp),
+            np.arange(2 * halo, dtype=np.intp),
+        )
+    return global_ids, owners, pairs
 
-    edges = [HaloEdge(prev, left, left), HaloEdge(nxt, right, right)]
-    pairs = [None] * size
-    pairs[prev] = (left, right)
-    pairs[nxt] = (right, left)
-    return edges, pairs
 
+def generate_grid(rank: int, size: int, n: int, halo: int):
+    """2-D periodic uniform grid (torus): Px x Py ranks, each owns n x n nodes.
 
-def apply_replace(empi, array: np.ndarray) -> np.ndarray:
-    """EntityMPI 'replace' equivalent, in-place (mirrors exchange(op='replace')).
-
-    ``sync`` copies every sent block before the ``alltoall``, so scattering into
-    ``array`` afterwards is safe and does no full-array copy — the same array
-    work HaloPlan.exchange performs.
+    Local block is (n+2H) x (n+2H) with periodic wrap.  Sharing pairs cover the
+    8 neighbours (4 edges + 4 diagonals); diagonals are required so that corner
+    nodes shared by 4 ranks are fully summed by sync_add.
     """
-    for data in empi.sync(array):
-        if data is not None:
-            array[data.indices] = data.data
-    return array
+    if size < 4:
+        raise ValueError("grid requires size >= 4")
+    if n < 2 or halo < 1 or halo >= n:
+        raise ValueError("grid requires n >= 2 and 1 <= halo < n")
+
+    px, py = factor_grid(size)
+    if n + 2 * halo > px * n or n + 2 * halo > py * n:
+        raise ValueError(
+            f"grid block width {n + 2 * halo} exceeds periodic extent for {px}x{py} ranks "
+            "(halo too large; a wrapped block would duplicate global ids)"
+        )
+    gx_rank, gy_rank = rank // py, rank % py
+    GX = px * n
+    GY = py * n
+    L = n + 2 * halo
+
+    li = np.arange(L, dtype=np.int64)
+    gi = (gx_rank * n - halo + li) % GX
+    gj = (gy_rank * n - halo + li) % GY
+    # Broadcasting (no full meshgrid) keeps the peak memory low for large payloads.
+    global_ids = (gi[:, None] * GY + gj[None, :]).ravel()
+    own_i = ((gi // n) * py).astype(np.int32)
+    own_j = (gj // n).astype(np.int32)
+    owners = (own_i[:, None] + own_j[None, :]).ravel()
+
+    base_i = (gx_rank * n - halo) % GX
+    base_j = (gy_rank * n - halo) % GY
+
+    collected: dict[int, list[np.ndarray]] = {}
+    for dnx in (-1, 0, 1):
+        for dny in (-1, 0, 1):
+            if dnx == 0 and dny == 0:
+                continue
+            npx = (gx_rank + dnx) % px
+            npy = (gy_rank + dny) % py
+            nrank = npx * py + npy
+
+            glo = max(gx_rank * n - halo, (gx_rank + dnx) * n - halo)
+            ghi = min(gx_rank * n + n + halo, (gx_rank + dnx) * n + n + halo)
+            jlo = max(gy_rank * n - halo, (gy_rank + dny) * n - halo)
+            jhi = min(gy_rank * n + n + halo, (gy_rank + dny) * n + n + halo)
+            if glo >= ghi or jlo >= jhi:
+                continue
+
+            ogi = np.arange(glo, ghi, dtype=np.int64)
+            ogj = np.arange(jlo, jhi, dtype=np.int64)
+            OGI, OGJ = np.meshgrid(ogi, ogj, indexing="ij")
+
+            gi_mod = OGI % GX
+            gj_mod = OGJ % GY
+            base_i2 = (npx * n - halo) % GX
+            base_j2 = (npy * n - halo) % GY
+
+            index_self = (((gi_mod - base_i) % GX) * L + ((gj_mod - base_j) % GY)).ravel()
+            index_other = (((gi_mod - base_i2) % GX) * L + ((gj_mod - base_j2) % GY)).ravel()
+
+            collected.setdefault(nrank, ([], []))
+            collected[nrank][0].append(index_self)
+            collected[nrank][1].append(index_other)
+
+    pairs: list[Any] = [None] * size
+    for nrank, (self_list, other_list) in collected.items():
+        pairs[nrank] = (np.concatenate(self_list), np.concatenate(other_list))
+    return global_ids, owners, pairs
 
 
-def apply_sum(empi, array: np.ndarray) -> np.ndarray:
-    """EntityMPI 'sum' equivalent, in-place (mirrors exchange(op='sum'))."""
+def sync_add_no_copy(empi, array: np.ndarray) -> np.ndarray:
+    """EntityMPI.sync_add without the full-array copy (in-place reduce).
+
+    ``sync`` copies every sent block before the alltoall, so accumulating into
+    ``array`` afterwards is safe and performs no full-array copy.
+    """
     for data in empi.sync(array):
         if data is not None:
             np.add.at(array, data.indices, data.data)
     return array
 
 
-def assert_equivalence(comm: MPI.Comm, plan: HaloPlan, empi, entities: int, components: int, rank: int) -> None:
-    shape = payload_shape(entities, components)
-    base = make_payload(shape, rank, np.dtype(np.float64))
-    lhs = plan.exchange(base.copy(), op="sum")
-    rhs = apply_sum(empi, base.copy())
-    if not np.allclose(lhs, rhs):
-        raise AssertionError("sum result mismatch between HaloPlan.exchange and EntityMPI.sync + apply")
-    lhs = plan.exchange(base.copy(), op="replace")
-    rhs = apply_replace(empi, base.copy())
-    if not np.allclose(lhs, rhs):
-        raise AssertionError("replace result mismatch between HaloPlan.exchange and EntityMPI.sync")
+def assert_equivalence(
+    reduce_plan: HaloPlan,
+    broadcast_plan: HaloPlan,
+    empi,
+    local_count: int,
+    rank: int,
+) -> None:
+    base = make_payload(local_count, rank, np.dtype(np.float64))
+    expected = HaloPlan.reduce_and_broadcast(reduce_plan, broadcast_plan, base.copy())
+    got_copy = empi.sync_add(base.copy())
+    got_no_copy = sync_add_no_copy(empi, base.copy())
+    if not np.allclose(expected, got_copy):
+        raise AssertionError("sync_add (copy) mismatch vs reduce_and_broadcast")
+    if not np.allclose(expected, got_no_copy):
+        raise AssertionError("sync_add (no-copy) mismatch vs reduce_and_broadcast")
 
 
-def time_fn(comm: MPI.Comm, fn: Callable[[], Any], payload_bytes: int, warmup: int, repeats: int) -> Measurement:
+def time_fn(
+    comm: MPI.Comm,
+    fn: Callable[[], Any],
+    payload_bytes: int,
+    warmup: int,
+    repeats: int,
+) -> Measurement:
     for _ in range(warmup):
         fn()
         comm.Barrier()
     samples: list[float] = []
-    tracemalloc.start()
     for _ in range(repeats):
         comm.Barrier()
         started = time.perf_counter()
         fn()
         samples.append(synchronized_max(comm, time.perf_counter() - started))
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
     median = statistics.median(samples)
     return Measurement(
         median_seconds=median,
@@ -177,34 +280,7 @@ def time_fn(comm: MPI.Comm, fn: Callable[[], Any], payload_bytes: int, warmup: i
         max_seconds=max(samples),
         payload_bytes=payload_bytes,
         effective_bandwidth_bytes_per_second=payload_bytes / median if median else float("inf"),
-        temporary_memory_peak_bytes=int(peak),
     )
-
-
-def measure_case(
-    comm: MPI.Comm,
-    plan: HaloPlan,
-    empi,
-    shape: tuple[int, ...],
-    rank: int,
-    payload_bytes: int,
-    warmup: int,
-    repeats: int,
-) -> dict[str, dict[str, Any]]:
-    dtype = np.dtype(np.float64)
-    metrics: dict[str, dict[str, Any]] = {}
-    for op in ("replace", "sum"):
-        halo_payload = make_payload(shape, rank, dtype)
-        metrics[f"halo_plan_{op}"] = asdict(time_fn(
-            comm, lambda p=halo_payload, o=op: plan.exchange(p, op=o), payload_bytes, warmup, repeats,
-        ))
-        empi_payload = make_payload(shape, rank, dtype)
-        if op == "replace":
-            fn = lambda p=empi_payload: apply_replace(empi, p)  # noqa: E731
-        else:
-            fn = lambda p=empi_payload: apply_sum(empi, p)  # noqa: E731
-        metrics[f"entity_mpi_{op}"] = asdict(time_fn(comm, fn, payload_bytes, warmup, repeats))
-    return metrics
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
@@ -216,72 +292,76 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     SharingPair = sys.modules["fealpy.distributed.entity_mpi"].SharingPair
 
     entities_list = _csv_ints(args.entities_list)
-    components_list = _csv_ints(args.components_list)
-    if args.halo_list is not None:
-        halo_list = _csv_ints(args.halo_list)
-    else:
-        halo_list = [max(1, e // 16) for e in entities_list]
+    halo_list = _csv_ints(args.halo_list)
+    if len(entities_list) != len(halo_list):
+        raise ValueError("--entities-list and --halo-list must have the same length (paired element-wise)")
+    dtype = np.dtype(np.float64)
 
     configs: list[dict[str, Any]] = []
-    for entities in entities_list:
-        for halo in halo_list:
-            if entities < 2 * halo:
+    for entities, halo in zip(entities_list, halo_list):
+        if args.topology == "ring":
+            if size < 2 or entities < 2 * halo:
                 continue
-            for components in components_list:
-                shape = payload_shape(entities, components)
-                edges, raw_pairs = build_topology(rank, size, entities, halo)
-                pairs = [
-                    None if raw is None else SharingPair(raw[0], raw[1])
-                    for raw in raw_pairs
-                ]
-                comm.Barrier()
-                t0 = time.perf_counter()
-                plan = HaloPlan.from_edges(comm, edges, entity_count=entities)
-                halo_build = synchronized_max(comm, time.perf_counter() - t0)
-                t0 = time.perf_counter()
-                empi = EntityMPI(pairs=pairs, comm=comm)
-                empi_build = synchronized_max(comm, time.perf_counter() - t0)
+            local_count = entities + 2 * halo
+            global_ids, owners, raw_pairs = generate_ring(rank, size, entities, halo)
+        else:
+            if size < 4 or entities < 2 or halo < 1 or halo >= entities:
+                continue
+            local_count = (entities + 2 * halo) ** 2
+            global_ids, owners, raw_pairs = generate_grid(rank, size, entities, halo)
 
-                correct = True
-                if not args.no_assert and size >= 2:
-                    try:
-                        assert_equivalence(comm, plan, empi, entities, components, rank)
-                    except AssertionError:
-                        correct = False
-                elif size == 1:
-                    correct = True
+        pairs = [None if rp is None else SharingPair(rp[0], rp[1]) for rp in raw_pairs]
 
-                send_entities = plan.total_send_count
-                payload_bytes = int(send_entities * np.prod(shape[1:] or (1,)) * np.dtype(np.float64).itemsize)
-                index_bytes_sync = int(send_entities * 8)  # int64 index tensor shipped by sync
+        reduce_plan, broadcast_plan = HaloPlan.from_global_ids(
+            comm, global_ids, owners, direction="two_way"
+        )
+        empi = EntityMPI(pairs=pairs, comm=comm)
+        del global_ids, owners, raw_pairs
 
-                metrics = measure_case(comm, plan, empi, shape, rank, payload_bytes, args.warmup, args.repeats)
+        correct = True
+        if not args.no_assert and size >= 2:
+            try:
+                assert_equivalence(reduce_plan, broadcast_plan, empi, local_count, rank)
+            except AssertionError:
+                correct = False
 
-                halo_med = metrics[f"halo_plan_replace"]["median_seconds"]
-                empi_med = metrics[f"entity_mpi_replace"]["median_seconds"]
-                speedup_replace = empi_med / halo_med if halo_med else float("inf")
-                halo_med = metrics[f"halo_plan_sum"]["median_seconds"]
-                empi_med = metrics[f"entity_mpi_sum"]["median_seconds"]
-                speedup_sum = empi_med / halo_med if halo_med else float("inf")
+        payload_bytes = int(local_count * dtype.itemsize)
+        halo_entities = int(reduce_plan.total_send_count)
 
-                configs.append({
-                    "entities": entities,
-                    "halo": halo,
-                    "components": components,
-                    "send_entities": send_entities,
-                    "payload_bytes": payload_bytes,
-                    "index_bytes_sync": index_bytes_sync,
-                    "correct": correct,
-                    "halo_plan_build_seconds_max_rank": halo_build,
-                    "entity_mpi_build_seconds_max_rank": empi_build,
-                    "metrics": metrics,
-                    "speedup_replace": speedup_replace,
-                    "speedup_sum": speedup_sum,
-                })
-                plan.close()
+        metrics: dict[str, dict[str, Any]] = {}
+        for case in ("reduce_and_broadcast", "sync_add", "sync_add_no_copy"):
+            payload = make_payload(local_count, rank, dtype)
+            if case == "reduce_and_broadcast":
+                fn = lambda p=payload: HaloPlan.reduce_and_broadcast(  # noqa: E731
+                    reduce_plan, broadcast_plan, p
+                )
+            elif case == "sync_add":
+                fn = lambda p=payload: empi.sync_add(p)  # noqa: E731
+            else:
+                fn = lambda p=payload: sync_add_no_copy(empi, p)  # noqa: E731
+            metrics[case] = asdict(time_fn(comm, fn, payload_bytes, args.warmup, args.repeats))
+
+        base_median = metrics["reduce_and_broadcast"]["median_seconds"]
+        speedup_copy = metrics["sync_add"]["median_seconds"] / base_median if base_median else float("inf")
+        speedup_no_copy = metrics["sync_add_no_copy"]["median_seconds"] / base_median if base_median else float("inf")
+
+        configs.append({
+            "topology": args.topology,
+            "entities": entities,
+            "halo": halo,
+            "local_count": local_count,
+            "payload_bytes": payload_bytes,
+            "halo_entities": halo_entities,
+            "correct": correct,
+            "metrics": metrics,
+            "speedup_copy": speedup_copy,
+            "speedup_no_copy": speedup_no_copy,
+        })
+        reduce_plan.close()
+        broadcast_plan.close()
 
     result: dict[str, object] = {
-        "schema": "tribbie.halo.comparison.v1",
+        "schema": "tribbie.halo.comparison.v2",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "environment": {
             "platform": platform.platform(),
@@ -290,21 +370,21 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "fealpy_path": str(args.fealpy_path),
         },
         "parameters": {
+            "topology": args.topology,
             "entities_list": entities_list,
             "halo_list": halo_list,
-            "components_list": components_list,
             "warmup": args.warmup,
             "repeats": args.repeats,
         },
         "configs": configs,
         "notes": [
+            "Compares HaloPlan.reduce_and_broadcast (two_way from_global_ids) with EntityMPI.sync_add (copy and no-copy variants).",
+            "Both paths are mathematically equivalent: every copy of every shared entity ends up with the global sum of all contributions.",
+            "Construction time is excluded and not compared (from_global_ids discovery vs sharing_pairs are not comparable).",
+            "speedup_copy = sync_add_median / reduce_and_broadcast_median; speedup_no_copy = sync_add_no_copy_median / reduce_and_broadcast_median (>1 means reduce_and_broadcast is faster).",
+            "sync_add (copy) is fealpy's native out-of-place API (full-array copy); sync_add_no_copy applies the same reduction in-place.",
+            "tracemalloc is disabled: the full-array copy is a real cost being measured, and tracemalloc would distort it.",
             "Timing samples are communicator-wide maximum rank times.",
-            "HaloPlan.exchange uses point-to-point typed Isend/Irecv; EntityMPI.sync uses dense comm.alltoall over pickled SparseData1D objects.",
-            "Both sides apply the received halo in-place (no full-array copy), so the measured difference isolates the communication path.",
-            "payload_bytes counts useful payload only; index_bytes_sync is the extra int64 index tensor shipped by sync each call.",
-            "EntityMPI.sync_add (the out-of-place reduce API) additionally copies the full array and is not measured here; its extra cost grows with E.",
-            "speedup_* = entity_mpi_median / halo_plan_median (>1 means HaloPlan is faster).",
-            "Construction (from_edges / EntityMPI init) is excluded from exchange timings.",
         ],
     }
     if rank == 0 and args.output is not None:

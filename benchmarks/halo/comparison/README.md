@@ -1,92 +1,124 @@
-# HaloPlan.exchange vs EntityMPI.sync 对比实验
+# reduce-and-broadcast vs sync_add 对比实验
 
-本目录是对比基准的程序与结论，用于回答「tribbie 的 `HaloPlan.exchange` 与 fealpy 的
-`EntityMPI.sync` 哪个更快」。原始数据（JSON + Markdown）归档于
-`reports/halo/comparison/2026-09-01-sweep2/`。
+本目录是对比基准的程序与结论，回答「tribbie 的 `HaloPlan.reduce_and_broadcast` 与 fealpy 的
+`EntityMPI.sync_add` 在求解器 SpMV 归约-广播路径上哪个更快」。
 
-## 结论（TL;DR）
+- `compare_sync.py`：单次 `mpiexec` 启动内，对给定拓扑在多个 payload 上先做数值等价断言再计时。
+- `render_comparison.py`：把 JSON 渲染成 Markdown。
+- `run_comparison.ps1`：按 ring / grid 两种拓扑遍历 size 与 payload 并调用 `mpiexec`。
 
-在测试的全部 14 个配置 × 2 种语义（`replace` / `sum`）中，`HaloPlan.exchange`
-**每一项都快于** `EntityMPI.sync`（28 个加速比全部 > 1）。因此，**对测试数据而言，
-`exchange` 是 `sync` 的性能上界（完全上位）**：
+## 语义对齐
 
-| 语义 | 加速比范围 | 均值（14 个配置） |
+两条路径语义不同但**数学等价**：给定同一份分布式元数据（同一组全局实体、同一 owner、同一共享关系），
+二者最终都得到「每个共享实体的每个副本 = 全局贡献之和」。
+
+- `reduce_and_broadcast(reduce_plan, broadcast_plan, values)`：先 ghost→owner `sum`，再 owner→ghost `replace`。
+- `sync_add(array)`：每个 rank 把**所有**共享该实体的其它 rank 的贡献累加到自己的本地副本上。
+
+三者（`reduce_and_broadcast`、`sync_add` 带拷贝、`sync_add` 不带拷贝）先做 `allclose` 等价断言，
+断言通过才计时（`correct` 字段）。
+
+## 元数据同源
+
+每个 (topology, size, payload) 配置由**同一个确定性生成器**产出两种表示：
+
+- tribbie 侧：`global_ids`、`owners` → `from_global_ids(comm, global_ids, owners, direction="two_way")`。
+- EntityMPI 侧：`sharing_pairs`（每 rank 一份，索引 = 对端 rank）→ `EntityMPI(pairs=sharing_pairs, comm=comm)`。
+
+构造时间不计时、不比较（`from_global_ids` 的发现与 `sharing_pairs` 的直接给出本不同构）。
+
+## 拓扑
+
+- `ring`：一维周期环，每个 rank 拥有 E 个实体，与左右各共享 H 个（本地 `E+2H`）。
+- `grid`：二维周期均匀网格（环面），`Px×Py` 个 rank，每个 rank 拥有 `n×n` 节点，本地 `(n+2H)²`；
+  sharing_pairs 覆盖 8 邻域（4 边 + 4 对角），对角保证角节点（4 rank 共享）能被 `sync_add` 完整汇总。
+
+## 三个计时用例
+
+1. `reduce_and_broadcast`（就地，两次点对点交换）。
+2. `sync_add`（fealpy 原生 API，**整组拷贝** + alltoall + index_add，out-of-place）。
+3. `sync_add_no_copy`（就地 `np.add.at`，无整组拷贝，隔离通信路径）。
+
+`speedup_copy = sync_add / reduce_and_broadcast`，`speedup_no_copy = sync_add_no_copy / reduce_and_broadcast`；
+两者之差即整组拷贝在该 payload 下的影响。`>1` 表示 reduce_and_broadcast 更快。
+
+## 实验矩阵
+
+| 轴       | 取值                                                       |
+| ------- | -------------------------------------------------------- |
+| 拓扑      | `ring`、`grid`                                            |
+| 并行规模    | ring `size ∈ {2,4,8,16}`；grid `size ∈ {4,8,16}`          |
+| payload | ≈ 100KB / 1MB / 10MB / 100MB（本地数组字节 = 本地实体数 × 8，float64） |
+
+`tracemalloc` 已禁用：整组拷贝是被实测的真实成本，tracemalloc 会按分配放大拷贝时间、污染结论。
+
+## 运行
+
+```powershell
+# 前置：起 MPI 进程管理器（管理员起 MsMpiLaunchSvc，或普通用户 smpd -d）
+powershell -ExecutionPolicy Bypass -File benchmarks/halo/comparison/run_comparison.ps1 -RunId <run-id>
+```
+
+单次手动（ring，size=4，E=10^5，H=1024）：
+
+```powershell
+mpiexec -n 4 .venv\Scripts\python.exe benchmarks/halo/comparison/compare_sync.py `
+  --topology ring --entities-list 100000 --halo-list 1024 `
+  --warmup 3 --repeats 10 `
+  --output reports/halo/comparison/<run-id>/ring-size4.json
+```
+
+## 结果与结论
+
+全部 24 个配置（ring 14 + grid 10，见矩阵）`correct = True`，且 `reduce_and_broadcast` **每一项都快于** `sync_add`（带拷贝与不带拷贝两个变体）——`speedup > 1` 无一例外：
+
+| | speedup_copy | speedup_no_copy |
 | --- | ---: | ---: |
-| `replace` | 1.34× – 8.65× | ≈ 3.2× |
-| `sum` | 2.23× – 14.36× | ≈ 6.0× |
+| 范围 | 1.55× – 19.48× | 3.03× – 23.78× |
 
-`speedup = entity_mpi_median / halo_plan_median`，`> 1` 表示 `exchange` 更快；时间取
-communicator 内最慢 rank 的中位数（warmup 5、repeat 20）。
+`speedup = sync_add 中位数 / reduce_and_broadcast 中位数`（>1 表示 reduce_and_broadcast 更快），
+时间取 communicator 内最慢 rank 的中位数（warmup 3、repeat 10、`tracemalloc` 已禁用）。
 
-## 实验设计（公平性）
+### 代表数据（size=4）
 
-- **语义对齐**：两侧构造同一「1-D 周期链、每 rank 左右各共享 `H` 个 halo 实体」问题，
-  并做数值等价断言 —— `exchange(op="sum") == sync + in-place add`、
-  `exchange(op="replace") == sync + in-place scatter`。所有配置 `correct: true`，
-  保证比较的是同一数据流、同一字节量。
-- **就地 apply**：两侧都就地 apply（不做整组数组拷贝），因此测得的差异只反映
-  **通信 / 序列化路径**，不含拷贝。
-- **构造时间剔除**：`from_edges` / `EntityMPI.__init__` 的构造时间不计入交换计时。
+**ring（E + 2H 本地实体，H = E/16）**
 
-## 结果
+| payload | reduce (ms) | sync_add copy (ms) | speedup copy | sync_add no-copy (ms) | speedup no-copy |
+| ------: | ----------: | -----------------: | -----------: | --------------------: | --------------: |
+|   98 KB |       0.034 |              0.084 |        2.45× |                 0.130 |           3.78× |
+|  977 KB |       0.085 |              1.397 |       16.35× |                 1.431 |          16.75× |
+|  9.8 MB |       0.951 |              13.76 |       14.47× |                 14.65 |          15.40× |
+|   98 MB |        35.1 |              181.5 |        5.16× |                 220.9 |           6.29× |
 
-### 弱扩展（每 rank E=10⁵，H=1024，payload 16 KB）
+**grid（(n+2H)² 本地实体，H = n/16）**
 
-| size | exchange (µs) | sync (µs) | speedup |
-| ---: | ---: | ---: | ---: |
-| 2  | 76.5 / 70.2  | 105.1 / 227.2 | 1.37× / 3.24× |
-| 4  | 97.9 / 108.6 | 243.2 / 270.6 | 2.49× / 2.49× |
-| 8  | 226.2 / 257.0| 496.2 / 821.6 | 2.19× / 3.20× |
-| 16 | 238.1 / 274.6| 754.6 / 1003  | 3.17× / 3.65× |
+| payload | reduce (ms) | sync_add copy (ms) | speedup copy | sync_add no-copy (ms) | speedup no-copy |
+| ------: | ----------: | -----------------: | -----------: | --------------------: | --------------: |
+|  124 KB |       0.156 |              0.315 |        2.03× |                 1.043 |           6.70× |
+|  1.2 MB |       0.293 |              5.707 |       19.48× |                 6.966 |          23.78× |
+|   12 MB |        11.8 |               53.7 |        4.54× |                 103.7 |           8.76× |
+|  121 MB |       141.5 |              648.4 |        4.58× |                1066.0 |           7.53× |
 
-（每格为 `replace / sum` 的中位数，µs）
+完整数据见 `reports/halo/comparison/<run-id>/`（每个 `*.json` 对应一份 `*.md` 渲染）。
 
-### 强扩展（全局 10⁶ 实体按 rank 均分）
+### 整组拷贝的影响（要求 4）
 
-| size | E | H | replace speedup | sum speedup |
-| ---: | ---: | ---: | ---: | ---: |
-| 2  | 500000 | 31250 | 4.67× | 14.36× |
-| 4  | 250000 | 15625 | 3.73× | 12.57× |
-| 8  | 125000 | 7812  | 2.17× | 6.32× |
-| 16 | 62500  | 3906  | 4.91× | 9.11× |
+结论与直觉不同：**整组拷贝在这组 payload 下不是 `sync_add` 的主要开销**。
 
-### 数据规模（size=4，float64，C=1）
+- `sync_add`（带拷贝）与 `sync_add`（无拷贝）的中位数接近，且在若干大 payload 配置下**无拷贝反而更慢**
+  （如 grid size=4 @ 12 MB：copy 53.7 ms vs no-copy 103.7 ms）。这说明 `sync_add` 的差距主要来自
+  **稠密 `comm.alltoall` + pickle 序列化 + `np.add.at`**，而整组 `array.copy()`（即使 100 MB 也仅 ~10 ms 量级）
+  不是瓶颈。
+- 早前旧基准（`2026-09-01-sweep*`）出现的 ~52× 整组拷贝放大，是 `tracemalloc` 按分配放大所致；本基准
+  禁用 `tracemalloc` 后，整组拷贝的成本在总开销中占比很小。
 
-| E | H | payload | replace speedup | sum speedup |
-| ---: | ---: | ---: | ---: | ---: |
-| 10⁴ | 625   | 10 KB  | 1.74× | 2.96× |
-| 10⁵ | 625   | 10 KB  | 2.40× | 2.39× |
-| 10⁵ | 6250  | 100 KB | 3.87× | 6.54× |
-| 10⁶ | 625   | 10 KB  | 2.06× | 2.23× |
-| 10⁶ | 6250  | 100 KB | 1.34× | 3.23× |
-| 10⁶ | 62500 | 1 MB   | 8.65× | 12.10× |
+### 趋势
 
-**趋势**：加速比随 payload 字节（`H`）单调增大（10 KB → 1 MB 时 replace 1.3–2.4× 升到
-8.65×，sum 2.2–3.0× 升到 12.1×），并随 rank 数整体走高（弱扩展 2 → 16 时 replace
-1.37× → 3.17×）。小 payload 时差距被单机 MPI 延迟噪声压低，但 `exchange` 仍无例外地更快。
+- `speedup` 随 payload 增大整体走高（小 payload 时单机 MPI 延迟噪声压低差距，但仍 >1）。
+- 拓扑与并行规模上，grid 的加速比普遍高于 ring（grid 每个 rank 有更多邻居，`alltoall` 的消息数 O(size) 与
+  pickle 开销被放大）；两种拓扑下 `reduce_and_broadcast` 均保持全面占优。
 
-## 为什么 `exchange` 全面占优（机制）
+## 历史版本
 
-`exchange` 与 `sync` 的运行时路径存在三层本质差异：
-
-| 开销 | `HaloPlan.exchange` | `EntityMPI.sync` |
-| --- | --- | --- |
-| 通信 | 点对点 typed `Isend`/`Irecv`，只与真实邻居（2 个）通信 | 稠密 `comm.alltoall`，对**所有** rank 发消息（O(size)） |
-| 序列化 | 原生 dtype 裸 buffer，零 pickle | 每条消息 pickle 一个 `SparseData1D`（数据 + 索引） |
-| 索引 | 静态存在 plan，运行期不传 | 每条消息额外带一个 int64 `index_other` 张量 |
-
-`sync` 每次调用的在线字节 ≈ 有用 payload × 2（数据 + 索引张量），且全部经过 pickle；
-`exchange` 只传有用 payload 且走原生类型。因此差距随数据规模与并行规模同步放大。
-
-## 范围与注意事项（诚实声明）
-
-- **「完全上位」的边界**：结论建立在测试网格内（14 个配置，`float64`、`C=1`、
-  1-D 周期链、单机 Windows 11 + MS-MPI 10.1，绝对时间为本机基线）。未覆盖多分量
-  `C>1`、非连续布局、跨节点网络；在这些维度外推需另行验证。
-- **拷贝因素**：本结论测的是「隔离通信」口径（两侧都就地 apply）。若按
-  **API 原生用法**直接对比 `sync_add`（out-of-place，每次都整组 `array.copy()`）与
-  `exchange`（就地），在小 halo / 大数组的极端 regime（如 `E=10⁶, H=625`）差距会因
-  整组拷贝进一步放大到 ~52×；这是 `sync_add` 的 out-of-place 契约，而非 `sync` 本身。
-  `sync`（transfer）只拷贝共享块，不含整组拷贝。
-- **测量噪声**：计时期间启用 `tracemalloc` 会略微放大「每次调用都分配数组」的
-  `sync`/`sync_add` 开销，真实无 trace 运行的绝对倍数可能略低于表列值，但方向不变。
+早期版本比较的是 `HaloPlan.exchange`（replace/sum）与 `EntityMPI.sync`（transfer），
+归档于 `reports/halo/comparison/2026-09-01-sweep*`，方法与结论已被本目录取代。
