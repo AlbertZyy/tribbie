@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Iterable
-from typing import Any, Mapping, TYPE_CHECKING
+from typing import Any, Literal, Mapping, TYPE_CHECKING, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -85,6 +85,7 @@ class HaloPlan:
         self._active_request: HaloRequest[Any] | None = None
         self._closed = False
 
+    @overload
     @classmethod
     def from_global_ids(
         cls,
@@ -92,23 +93,73 @@ class HaloPlan:
         global_ids: Any,
         owners: Any,
         *,
+        direction: Literal["owner_to_ghost"],
         validation: str = "basic",
-    ) -> HaloPlan:
-        """Build an owner-to-ghost plan from distributed global identifiers.
+    ) -> HaloPlan: ...
+
+    @overload
+    @classmethod
+    def from_global_ids(
+        cls,
+        comm: MPI.Comm,
+        global_ids: Any,
+        owners: Any,
+        *,
+        direction: Literal["ghost_to_owner"],
+        validation: str = "basic",
+    ) -> HaloPlan: ...
+
+    @overload
+    @classmethod
+    def from_global_ids(
+        cls,
+        comm: MPI.Comm,
+        global_ids: Any,
+        owners: Any,
+        *,
+        direction: Literal["two_way"],
+        validation: str = "basic",
+    ) -> tuple[HaloPlan, HaloPlan]: ...
+
+    @classmethod
+    def from_global_ids(
+        cls,
+        comm: MPI.Comm,
+        global_ids: Any,
+        owners: Any,
+        *,
+        direction: str = "two_way",
+        validation: str = "basic",
+    ) -> HaloPlan | tuple[HaloPlan, HaloPlan]:
+        """Build directed plan(s) from distributed global identifiers.
 
         ``global_ids`` and ``owners`` describe this rank's local entities;
-        owners are supplied explicitly and are not inferred.  Non-owner ranks
-        send ``(global_id, local_index)`` requests to owners during
-        construction.  Owners answer with their local index, allowing both
-        sides to cache a directed edge; runtime exchange then transfers only
-        numeric payload buffers and never repeats the identifier exchange.
+        owners are supplied explicitly and are not inferred.  ``direction``
+        selects the edge orientation:
+
+        * ``"owner_to_ghost"``: ``send_indices`` are owned positions and
+          ``recv_indices`` are ghost positions (owner scatters to ghosts,
+          usually paired with ``replace``).
+        * ``"ghost_to_owner"``: ``send_indices`` are ghost positions and
+          ``recv_indices`` are owned positions (ghosts contribute to the owner,
+          usually paired with ``sum``).
+        * ``"two_way"`` (default): returns ``(ghost_to_owner, owner_to_ghost)``
+          from a single discovery, in the order expected by
+          :meth:`reduce_and_broadcast`.
+
+        Construction runs a single vectorized discovery: ghosts send their
+        global identifiers to owners with one typed ``Alltoallv``, and owners
+        map them to local indices with ``searchsorted``.  Runtime exchange then
+        transfers only numeric payload buffers and never repeats the
+        identifier exchange.
 
         ``basic`` performs local validation and distributed owner lookup;
         ``full`` additionally checks that every global identifier has one
-        consistent owner and that the declared owner stores that identifier.
-        ``none`` skips the optional full consistency pass but retains checks
-        needed to construct a safe plan.
+        consistent owner.  ``none`` skips the optional full consistency pass
+        but retains checks needed to construct a safe plan.
         """
+        if direction not in {"owner_to_ghost", "ghost_to_owner", "two_way"}:
+            raise ValueError(f"unsupported direction: {direction}")
         if validation not in {"none", "basic", "full"}:
             raise ValueError(f"unsupported validation level: {validation}")
         ids = np.asarray(global_ids)
@@ -124,37 +175,136 @@ class HaloPlan:
             )
             _validate_full_global_records(records, size)
 
-        local_index = {int(global_id): index for index, global_id in enumerate(ids)}
-        outbound: list[list[tuple[int, int]]] = [[] for _ in range(size)]
-        for index, (global_id, owner) in enumerate(zip(ids, owner_array)):
-            if int(owner) != rank:
-                outbound[int(owner)].append((int(global_id), index))
-        inbound = comm.alltoall(outbound)
-
-        responses: list[list[tuple[int, int, int]]] = [[] for _ in range(size)]
-        owner_edges: dict[int, list[int]] = {}
-        for requester, requests in enumerate(inbound):
-            for global_id, ghost_index in requests:
-                owner_index = local_index.get(global_id)
-                if owner_index is None:
-                    local_error = ("global_id", f"owner rank {rank} does not contain global id {global_id}")
-                    continue
-                responses[requester].append((global_id, ghost_index, owner_index))
-                owner_edges.setdefault(requester, []).append(owner_index)
-
+        owned_send, ghost_recv, local_error = cls._discover_owner_ghost(
+            comm, ids, owner_array, size, rank
+        )
         _raise_collective_validation_error(comm, local_error)
-        returned = comm.alltoall(responses)
-        ghost_edges: dict[int, list[int]] = {}
-        for owner, owner_responses in enumerate(returned):
-            for _global_id, ghost_index, _owner_index in owner_responses:
-                ghost_edges.setdefault(owner, []).append(ghost_index)
+        if direction == "two_way":
+            return (
+                cls.from_edges(
+                    comm,
+                    cls._assemble_edges(owned_send, ghost_recv, "ghost_to_owner"),
+                    validation=validation,
+                    entity_count=ids.size,
+                ),
+                cls.from_edges(
+                    comm,
+                    cls._assemble_edges(owned_send, ghost_recv, "owner_to_ghost"),
+                    validation=validation,
+                    entity_count=ids.size,
+                ),
+            )
+        return cls.from_edges(
+            comm,
+            cls._assemble_edges(owned_send, ghost_recv, direction),
+            validation=validation,
+            entity_count=ids.size,
+        )
 
-        edges = []
-        for peer in sorted(set(owner_edges) | set(ghost_edges)):
-            sends = owner_edges.get(peer, [])
-            receives = ghost_edges.get(peer, [])
-            edges.append(HaloEdge(peer, sends, receives))
-        return cls.from_edges(comm, edges, validation=validation, entity_count=ids.size)
+    @staticmethod
+    def _discover_owner_ghost(
+        comm: MPI.Comm,
+        ids: np.ndarray,
+        owner_array: np.ndarray,
+        size: int,
+        rank: int,
+    ) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray], tuple[str, str] | None]:
+        """Discover owner<->ghost sharing via a typed ``Alltoallv``.
+
+        Returns ``(owned_send, ghost_recv, local_error)``.  ``owned_send[p]``
+        holds this rank's owned local indices that peer ``p`` holds as ghosts;
+        ``ghost_recv[p]`` holds this rank's ghost local indices owned by peer
+        ``p``.  The k-th entry of ``owned_send[p]`` and ``ghost_recv[p]`` refer
+        to the same shared entity: a stable sort keeps ghosts ordered by owner
+        and then by ascending local index, and the owner maps the received
+        identifiers back in the same order.
+        """
+        owned_mask = owner_array == rank
+        ghost_mask = ~owned_mask
+        owned_idx = np.flatnonzero(owned_mask)
+        ghost_idx = np.flatnonzero(ghost_mask)
+        ghost_owner = owner_array[ghost_mask]
+
+        ogids = ids[owned_idx]
+        oorder = np.argsort(ogids, kind="stable")
+        ogids_sorted = ogids[oorder]
+        olocal_sorted = owned_idx[oorder]
+
+        gorder = np.argsort(ghost_owner, kind="stable")
+        gowner_sorted = ghost_owner[gorder]
+        ggids_sorted = ids[ghost_idx][gorder]
+        glocal_sorted = ghost_idx[gorder]
+
+        segments = [ggids_sorted[gowner_sorted == r] for r in range(size)]
+        send_counts = np.array([segment.size for segment in segments], dtype=np.int32)
+        recv_counts = np.empty(size, dtype=np.int32)
+        comm.Alltoall(send_counts, recv_counts)
+
+        send_total = int(send_counts.sum())
+        send_buf = np.empty(send_total, dtype=np.int64)
+        send_displs = np.zeros(size, dtype=np.int32)
+        offset = 0
+        for r in range(size):
+            send_displs[r] = offset
+            count = int(send_counts[r])
+            if count:
+                send_buf[offset:offset + count] = segments[r]
+            offset += count
+
+        recv_total = int(recv_counts.sum())
+        recv_buf = np.empty(recv_total, dtype=np.int64)
+        recv_displs = np.zeros(size, dtype=np.int32)
+        recv_displs[1:] = np.cumsum(recv_counts)[:-1]
+        comm.Alltoallv(
+            (send_buf, send_counts, send_displs, None),
+            (recv_buf, recv_counts, recv_displs, None),
+        )
+
+        owned_send: dict[int, np.ndarray] = {}
+        local_error: tuple[str, str] | None = None
+        for requester in range(size):
+            start = int(recv_displs[requester])
+            count = int(recv_counts[requester])
+            gids = recv_buf[start:start + count]
+            if gids.size == 0:
+                continue
+            pos = np.searchsorted(ogids_sorted, gids)
+            if ogids_sorted.size:
+                np.clip(pos, 0, ogids_sorted.size - 1, out=pos)
+                valid = ogids_sorted[pos] == gids
+            else:
+                valid = np.zeros(gids.size, dtype=bool)
+            owned_send[requester] = olocal_sorted[pos[valid]]
+            if not np.all(valid):
+                if local_error is None:
+                    missing = int(gids[np.flatnonzero(~valid)[0]])
+                    local_error = ("global_id", f"owner rank {rank} does not contain global id {missing}")
+
+        ghost_recv: dict[int, np.ndarray] = {}
+        for owner_rank in range(size):
+            segment = glocal_sorted[gowner_sorted == owner_rank]
+            if segment.size:
+                ghost_recv[owner_rank] = segment
+
+        return owned_send, ghost_recv, local_error
+
+    @staticmethod
+    def _assemble_edges(
+        owned_send: dict[int, np.ndarray],
+        ghost_recv: dict[int, np.ndarray],
+        direction: str,
+    ) -> list[HaloEdge]:
+        empty = np.empty(0, dtype=np.intp)
+        neighbors = sorted(set(owned_send) | set(ghost_recv))
+        edges: list[HaloEdge] = []
+        for peer in neighbors:
+            sends = owned_send.get(peer, empty)
+            receives = ghost_recv.get(peer, empty)
+            if direction == "owner_to_ghost":
+                edges.append(HaloEdge(peer, sends, receives))
+            else:
+                edges.append(HaloEdge(peer, receives, sends))
+        return edges
 
     @classmethod
     def from_edges(

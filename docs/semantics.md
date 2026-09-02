@@ -15,4 +15,4 @@ Owner 发出的值覆盖 ghost 的 `dst[recv_indices]`。阶段 B 必须拒绝�
 - Reduce-and-broadcast：先 Reduce-to-owner，再 Owner-to-ghost。
 - Peer exchange：调用方提供有向边，不要求 owner。
 
-这些语义在阶段 D 的单元及 MPI 测试中验证；reduce-and-broadcast 使用调用方显式提供的两个计划，不推断 owner。
+这些语义在阶段 D 的单元及 MPI 测试中验证；reduce-and-broadcast 可用调用方显式提供的两个计划（`from_edges`），也可由 `from_global_ids(..., direction="ghost_to_owner")` 与 `from_global_ids(..., direction="owner_to_ghost")`（或默认 `two_way` 一次得到两个方向）构造，后者仍不推断 owner。

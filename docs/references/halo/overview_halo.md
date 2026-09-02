@@ -34,7 +34,9 @@ $$
 
 即 $p$ 发给 $q$ 的实体数等于 $q$ 从 $p$ 接收的实体数，且顺序对齐：$p$ 发出的第 $i$ 个元素到达 $q$ 后成为其第 $i$ 个接收槽。
 
-`from_global_ids(comm, global_ids, owners)` 在构建期完成**分布式 owner 查询**：对每个共享实体 $g$（owner 为 $o$，ghost 为 $p$），ghost 把自己的 `(global_id, local_index)` 发给 owner，owner 回送其本地索引；由此缓存的边是严格的 **owner → ghost 方向**：
+`from_global_ids(comm, global_ids, owners, *, direction=...)` 在构建期完成**分布式 owner 查询**：ghost 把自己的全局编号一次性 typed `Alltoallv` 发给对应 owner，owner 用 `searchsorted` 映射为本地索引，得到两个方向共用的共享关系。`direction` 决定返回什么：
+
+- `"owner_to_ghost"`（默认，owner 只发送、ghost 只接收）：
 
 $$
 \begin{aligned}
@@ -43,7 +45,10 @@ $$
 \end{aligned}
 $$
 
-即 owner 只发送、ghost 只接收；运行期不再传输任何全局编号或索引，只交换数值载荷。ghost → owner 的归约方向不在此计划内，需由调用方用 `from_edges` 显式构造（见 §1.4 与示例 2）。
+- `"ghost_to_owner"`（ghost 只发送、owner 只接收，即把上式中的 $S$ 与 $R$ 互换）。
+- `"two_way"`（默认）：一次发现同时返回 `(ghost_to_owner, owner_to_ghost)` 两个方向。
+
+运行期不再传输任何全局编号或索引，只交换数值载荷。
 
 ### 1.3 `exchange` / `begin_exchange` 的数学过程
 
@@ -90,7 +95,7 @@ $$
 
 ### 1.4 归约与广播的复合
 
-`HaloPlan.reduce_and_broadcast(reduce_plan, broadcast_plan, values)` 串行复合两个**由调用方显式构造**的方向计划：
+`HaloPlan.reduce_and_broadcast(reduce_plan, broadcast_plan, values)` 串行复合两个方向计划（可用 `from_global_ids(..., direction="two_way")` 或 `from_global_ids(direction=...)` 构造，也可用 `from_edges` 显式构造）：
 
 $$
 R = \text{reduce\_plan.exchange}(values,\ op=\texttt{"sum"}), \qquad
@@ -104,14 +109,14 @@ $$
 \text{ghost} \leftarrow \text{owner 的归约结果},
 $$
 
-其中 $c_g$ 是各 ghost 的局部贡献。典型构造（示例 2）：`reduce_plan` 用 ghost 发送、owner 接收的边；`broadcast_plan` 用 owner 发送、ghost 接收的边。该助手不推断 owner、不构造全局索引映射。
+其中 $c_g$ 是各 ghost 的局部贡献。典型构造（示例 2）：`reduce_plan = from_global_ids(..., direction="ghost_to_owner")`、`broadcast_plan = from_global_ids(..., direction="owner_to_ghost")`，或默认 `direction="two_way"` 一次得到 `(reduce_plan, broadcast_plan)`；也可用 `from_edges` 显式给边。该助手不推断 owner、不构造全局索引映射。
 
 ## 2. 接口 Reference（Overview）
 
 | 接口                              | 签名                                                                                                                       | 对应的数学过程                                               |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
 | `HaloEdge`                      | `HaloEdge(peer, send_indices, recv_indices)`                                                                             | 一条有向边 $e = (q, S_{p,q}, R_{p,q})$                     |
-| `HaloPlan.from_global_ids`      | `from_global_ids(comm, global_ids, owners, *, validation="basic")`                                                       | 由全局编号分布式发现 owner→ghost 定向边（owner 只发、ghost 只收），并缓存索引   |
+| `HaloPlan.from_global_ids`      | `from_global_ids(comm, global_ids, owners, *, direction="two_way", validation="basic")` | 由全局编号分布式发现共享关系，按 `direction` 返回 owner→ghost / ghost→owner 单方向计划，或 `two_way` 返回 `(ghost_to_owner, owner_to_ghost)` |
 | `HaloPlan.from_edges`           | `from_edges(comm, edges, *, validation="basic", entity_count=None)`                                                      | 由显式边集构造计划：按 peer 合并、确定性排序、集体校验 $m_{p,q} = \ell_{q,p}$ |
 | `plan.exchange`                 | `exchange(src, dst=None, *, op="replace") -> dst`                                                                        | 阻塞执行 Gather → Transmit → Scatter($\oplus$) 并返回 $B$    |
 | `plan.begin_exchange`           | `begin_exchange(src, dst=None, *, op="replace") -> HaloRequest`                                                          | 同 `exchange` 的数学过程，但投递非阻塞请求后立即返回                      |
@@ -188,7 +193,7 @@ total = HaloPlan.reduce_and_broadcast(reduce_plan, broadcast_plan, local)
 assert total[0] == 3.0               # 双方都得到 1.0 + 2.0
 ```
 
-> 说明：`from_edges` 校验收发计数对称（$m_{p,q} = \ell_{q,p}$），因此单方向的归约/广播计划需要像上面这样把发送边与接收边分别放在两端；若两进程做对称的 peer exchange，也可直接使用双向边 `HaloEdge(peer, [0], [0])`。
+> 说明：`from_edges` 校验收发计数对称（$m_{p,q} = \ell_{q,p}$），因此单方向的归约/广播计划需要像上面这样把发送边与接收边分别放在两端；若两进程做对称的 peer exchange，也可直接使用双向边 `HaloEdge(peer, [0], [0])`。等价地，`reduce_plan, broadcast_plan = HaloPlan.from_global_ids(comm, ids, owners, validation="full")`（`ids`/`owners` 同示例 1，默认 `two_way`）可一次发现得到同样两个方向。
 
 ## 4. 进一步阅读
 

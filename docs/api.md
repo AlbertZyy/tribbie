@@ -4,7 +4,7 @@
 
 ## `HaloPlan`
 
-- `HaloPlan.from_global_ids(comm, global_ids, owners, *, validation="basic")`：`owners` 必须由调用方显式提供；计划构建期分布式发现 owner-to-ghost 索引，运行期不再传输全局编号。
+- `HaloPlan.from_global_ids(comm, global_ids, owners, *, direction="two_way", validation="basic")`：`owners` 必须由调用方显式提供；计划构建期以一次 typed `Alltoallv` + `searchsorted` 分布式发现共享关系，按 `direction` 返回 owner-to-ghost / ghost-to-owner 单方向计划，或 `two_way`（默认）返回 `(ghost_to_owner, owner_to_ghost)` 两个计划（可直接传给 `reduce_and_broadcast`），运行期不再传输全局编号。
 - `HaloPlan.from_edges(comm, edges, *, validation="basic")`
 - `plan.exchange(src, dst=None, *, op="replace")`
 - `plan.begin_exchange(src, dst=None, *, op="replace")`
