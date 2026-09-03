@@ -230,14 +230,13 @@ class IndexDistribution:
             layout=DistributionLayout(data["layout"]),
         )
 
-    def make_halo_plan(
+    def plan_two_way(
         self,
         comm: Any,
         *,
-        direction: str = "two_way",
         validation: str = "basic",
-    ) -> Any:
-        """Build a halo plan (or a ``(ghost_to_owner, owner_to_ghost)`` pair).
+    ):
+        """Build a ``(ghost_to_owner, owner_to_ghost)`` Halo plan pair.
 
         Delegates to :func:`tribbie.distribution.make_halo_plan`; the
         communicator is passed explicitly so this metadata object stays free of
@@ -245,7 +244,43 @@ class IndexDistribution:
         """
         from .plan import make_halo_plan
 
-        return make_halo_plan(self, comm, direction=direction, validation=validation)
+        return make_halo_plan(self, comm, direction="two_way", validation=validation)
+
+    def plan_ghost_to_owner(
+        self,
+        comm: Any,
+        *,
+        validation: str = "basic",
+    ):
+        """Build a ``ghost_to_owner`` Halo plan.
+
+        Delegates to :func:`tribbie.distribution.make_halo_plan`; the
+        communicator is passed explicitly so this metadata object stays free of
+        any ``MPI.Comm``.
+        """
+        from .plan import make_halo_plan
+
+        return make_halo_plan(
+            self, comm, direction="ghost_to_owner", validation=validation
+        )
+
+    def plan_owner_to_ghost(
+        self,
+        comm: Any,
+        *,
+        validation: str = "basic",
+    ):
+        """Build an ``owner_to_ghost`` Halo plan.
+
+        Delegates to :func:`tribbie.distribution.make_halo_plan`; the
+        communicator is passed explicitly so this metadata object stays free of
+        any ``MPI.Comm``.
+        """
+        from .plan import make_halo_plan
+
+        return make_halo_plan(
+            self, comm, direction="owner_to_ghost", validation=validation
+        )
 
     def _check_index(self, i: int) -> None:
         if not 0 <= int(i) < self.local_size:

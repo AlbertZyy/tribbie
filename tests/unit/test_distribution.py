@@ -212,13 +212,13 @@ def test_make_halo_plan_rejects_self_rank_mismatch():
         make_halo_plan(dist, MPI.COMM_SELF, direction="two_way")
 
 
-def test_distribution_make_halo_plan_method_delegates():
+def test_distribution_plan_two_way_method_delegates():
     dist = IndexDistribution(
         np.array([100, 7], dtype=np.int64),
         np.array([0, 0], dtype=np.int32),
         global_size=1000,
         self_rank=0,
     )
-    reduce_plan, broadcast_plan = dist.make_halo_plan(MPI.COMM_SELF)
+    reduce_plan, broadcast_plan = dist.plan_two_way(MPI.COMM_SELF)
     assert reduce_plan.neighbors == ()
     assert broadcast_plan.neighbors == ()

@@ -93,19 +93,7 @@ class HaloPlan:
         global_ids: Any,
         owners: Any,
         *,
-        direction: Literal["owner_to_ghost"],
-        validation: str = "basic",
-    ) -> HaloPlan: ...
-
-    @overload
-    @classmethod
-    def from_global_ids(
-        cls,
-        comm: MPI.Comm,
-        global_ids: Any,
-        owners: Any,
-        *,
-        direction: Literal["ghost_to_owner"],
+        direction: Literal["ghost_to_owner", "owner_to_ghost"],
         validation: str = "basic",
     ) -> HaloPlan: ...
 
@@ -256,8 +244,8 @@ class HaloPlan:
         recv_displs = np.zeros(size, dtype=np.int32)
         recv_displs[1:] = np.cumsum(recv_counts)[:-1]
         comm.Alltoallv(
-            (send_buf, send_counts, send_displs, None),
-            (recv_buf, recv_counts, recv_displs, None),
+            (send_buf, send_counts, send_displs, None), # type: ignore
+            (recv_buf, recv_counts, recv_displs, None), # type: ignore
         )
 
         owned_send: dict[int, np.ndarray] = {}

@@ -35,7 +35,7 @@ def make_halo_plan(
     distribution: IndexDistribution,
     comm: "MPI.Comm",
     *,
-    direction: str = "two_way",
+    direction: Literal["ghost_to_owner", "owner_to_ghost", "two_way"] = "two_way",
     validation: str = "basic",
 ) -> "HaloPlan | tuple[HaloPlan, HaloPlan]":
     """Build a halo plan from persistent distribution metadata.
